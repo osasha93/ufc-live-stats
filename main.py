@@ -14,7 +14,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")  # если нужна тема, иначе пусто
 
 FIGHT_ID = int(os.environ.get("FIGHT_ID", "12826"))  # 12826 – тестовый прошедший бой
-EVENT_ID = 0  # можно 0, работает для любого боя
+EVENT_ID = 1313
 STATS_URL = f"https://www.ufc.com/matchup/{EVENT_ID}/{FIGHT_ID}/post"
 
 MSG_ID_FILE = "live_message_id.txt"
