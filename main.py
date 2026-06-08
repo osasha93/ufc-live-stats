@@ -12,9 +12,8 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-# Автоматический режим (приоритет)
 EVENT_URL = os.environ.get("EVENT_URL", "")
-# Ручной режим (если EVENT_URL не задан)
+# Ручные параметры оставлены только как аварийный запасной вариант
 MANUAL_EVENT_ID = os.environ.get("EVENT_ID", "")
 MANUAL_FIGHT_IDS = os.environ.get("FIGHT_IDS", "")
 
@@ -43,65 +42,57 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Автоматическое получение event_id и fight_ids ----------
+# ---------- Автоматическое определение event_id ----------
 def fetch_event_data_from_url(event_url):
-    """Парсит страницу события и возвращает event_id и список fight_ids (от первого боя к главному)."""
+    # Если вручную заданы ID – используем их (для совместимости)
+    if MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
+        fight_ids = [int(f.strip()) for f in MANUAL_FIGHT_IDS.split(",") if f.strip()]
+        return int(MANUAL_EVENT_ID), fight_ids
+
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 1. Ищем fight_id в карточках (порядок в DOM: от главного к первому, поэтому переворачиваем)
+    # Собираем все fight_id из карточек (порядок: от главного к первому, переворачиваем)
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
+    if not cards:
+        raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
     fight_ids = [int(card["data-fmid"]) for card in cards]
-    if not fight_ids:
-        raise Exception("Не найдены ID боёв на странице события")
-    fight_ids.reverse()  # теперь первый бой -> главный
+    fight_ids.reverse()  # теперь первый бой → главный
 
-    # 2. Пытаемся получить event_id через API
-    slug = event_url.rstrip("/").split("/")[-1]
-    api_url = f"https://www.ufc.com/api/event/{slug}"
-    api_headers = {
-        "User-Agent": headers["User-Agent"],
-        "Accept": "application/json, text/plain, */*",
-        "Referer": event_url,
-        "X-Requested-With": "XMLHttpRequest"
-    }
+    # --- Определяем event_id через перенаправление ---
+    first_fight_id = fight_ids[0]
+    test_url = f"https://www.ufc.com/matchup/0/{first_fight_id}/post"
     try:
-        api_resp = requests.get(api_url, headers=api_headers, timeout=15)
-        if api_resp.status_code == 200 and api_resp.text.strip().startswith('{'):
-            data = api_resp.json()
-            if "eventId" in data:
-                return data["eventId"], fight_ids
-    except:
-        pass
-
-    # 3. Ищем eventId в JavaScript на странице события
-    scripts = soup.find_all("script")
-    for script in scripts:
-        if script.string and "eventId" in script.string:
-            match = re.search(r'"eventId"\s*:\s*"?(\d+)"?', script.string)
+        # Запрещаем автоматическое следование редиректу, чтобы поймать Location
+        r = requests.get(test_url, headers=headers, allow_redirects=False, timeout=10)
+        if r.status_code in (301, 302, 307, 308) and "Location" in r.headers:
+            redirect_url = r.headers["Location"]
+            # Ожидаемый формат: /matchup/1313/12827/post или https://www.ufc.com/matchup/1313/12827/post
+            match = re.search(r"/matchup/(\d+)/\d+", redirect_url)
             if match:
-                return int(match.group(1)), fight_ids
+                event_id = int(match.group(1))
+                print(f"Event ID определён через редирект: {event_id}")
+                return event_id, fight_ids
+    except Exception as e:
+        print(f"Попытка редиректа не удалась: {e}")
 
-    raise Exception("Не удалось определить Event ID автоматически. Укажите EVENT_ID и FIGHT_IDS вручную.")
+    # Если редирект не сработал – падаем с ошибкой (но такого быть не должно)
+    raise Exception("Не удалось определить Event ID. Попробуйте позже или укажите EVENT_ID вручную.")
 
 def get_event_data():
-    # Если задан EVENT_URL, используем автоматический режим
     if EVENT_URL:
-        print(f"Автоматический режим: парсим {EVENT_URL}")
+        print(f"Автоматический режим: анализируем {EVENT_URL}")
         return fetch_event_data_from_url(EVENT_URL)
-
-    # Ручной режим (когда нет EVENT_URL)
-    if MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
+    elif MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
         fight_ids = [int(f.strip()) for f in MANUAL_FIGHT_IDS.split(",") if f.strip()]
         return int(MANUAL_EVENT_ID), fight_ids
-
-    raise Exception("Не заданы ни EVENT_URL, ни EVENT_ID/FIGHT_IDS. Бот не знает, что отслеживать.")
+    else:
+        raise Exception("Не задан ни EVENT_URL, ни EVENT_ID/FIGHT_IDS.")
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
-    """Извлекает (value, percent, attempts_str) для красного и синего углов."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
     red_att = metric_el.find("span", class_="c-stat-metric-compare__value_of")
@@ -129,7 +120,6 @@ def parse_metric_from_element(metric_el):
     v2 = extract_int(blue_num)
     p2 = extract_int(blue_pct)
     a2_text = extract_attempts_text(blue_att)
-
     return (v1, p1, a1_text), (v2, p2, a2_text)
 
 # ---------- Статистика боя ----------
@@ -145,7 +135,6 @@ def get_fight_stats(event_id, fight_id):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # --- Победитель ---
     winner_idx = -1
     fighter_img_div = soup.find("div", class_="fighter-img")
     if fighter_img_div:
@@ -169,9 +158,8 @@ def get_fight_stats(event_id, fight_id):
         except:
             pass
 
-    # --- Имена и фото (с запасным URL) ---
     names = []
-    photos = []   # список кортежей (основной_url, запасной_url)
+    photos = []
     try:
         json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
         if json_script and json_script.string:
@@ -198,11 +186,9 @@ def get_fight_stats(event_id, fight_id):
     while len(photos) < 2:
         photos.append(("", ""))
 
-    # Статус завершения
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Только реальные раунды ---
     tab_buttons = soup.select("button.c-tabs__nav-btn")
     round_data = []
 
@@ -210,14 +196,12 @@ def get_fight_stats(event_id, fight_id):
         round_title = btn.get_text(strip=True)
         if not round_title.startswith("Round"):
             continue
-
         panel_id = btn.get("aria-controls")
         if not panel_id:
             continue
         panel = soup.find("div", id=panel_id)
         if not panel:
             continue
-
         container = panel.find("div", class_="c-stat-group__container")
         if not container:
             continue
@@ -287,9 +271,9 @@ def generate_image(data):
         if not primary_url:
             return None
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://www.ufc.com/",
-            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8"
         }
         for url in (primary_url, fallback_url):
             if not url:
