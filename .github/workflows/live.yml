@@ -28,5 +28,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
-          FIGHT_ID: ${{ secrets.FIGHT_ID }}
+          EVENT_URL: ${{ secrets.EVENT_URL }}
         run: python main.py
