@@ -46,7 +46,7 @@ def get_event_data():
     return EVENT_ID, fight_ids
 
 def parse_metric_from_element(metric_el):
-    """Извлекает (value, percent, attempts_str) для красного и синего."""
+    """Извлекает (value, percent, attempts_str) для красного и синего углов."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
     red_att = metric_el.find("span", class_="c-stat-metric-compare__value_of")
@@ -144,15 +144,22 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Обход вкладок (только раунды, без Full Fight) ---
+    # --- Обход вкладок и панелей (только раунды) ---
     tab_buttons = soup.select("button.c-tabs__nav-btn")
-    tab_panels = soup.select("div.c-tabs__pane")
     round_data = []
 
-    for btn, panel in zip(tab_buttons, tab_panels):
+    for btn in tab_buttons:
         round_title = btn.get_text(strip=True)
         if round_title == "Full Fight":
             continue   # пропускаем Full Fight
+
+        # Ищем id панели из aria-controls
+        panel_id = btn.get("aria-controls")
+        if not panel_id:
+            continue
+        panel = soup.find("div", id=panel_id)
+        if not panel:
+            continue
 
         container = panel.find("div", class_="c-stat-group__container")
         if not container:
@@ -252,7 +259,7 @@ def generate_image(data):
 
     # Нормировка шкал
     max_vals = {}
-    for m in ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]:
+    for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
         vals = []
         for rd in rounds:
             (v1, _, _), (v2, _, _) = rd.get(m, ((0,0,""),(0,0,"")))
