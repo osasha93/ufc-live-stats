@@ -13,7 +13,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
 FIGHT_ID = int(os.environ.get("FIGHT_ID", "12826"))
-EVENT_ID = 1313
+EVENT_ID = int(os.environ.get("EVENT_ID", "1313"))
 STATS_URL = f"https://www.ufc.com/matchup/{EVENT_ID}/{FIGHT_ID}/post"
 
 MSG_ID_FILE = "live_message_id.txt"
@@ -41,8 +41,8 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Парсинг статистики (новая логика) ----------
-def get_fight_stats():
+# ---------- Парсинг страницы ----------
+def get_fight_data():
     headers = {"User-Agent": "Mozilla/5.0"}
     url = STATS_URL + "?t=" + str(int(time.time()))
     try:
@@ -54,87 +54,168 @@ def get_fight_stats():
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Проверка завершения боя
-    body_text = soup.get_text()
-    is_finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
+    # 1. Имена бойцов (ищем блоки c-fighter-compare__name)
+    names = []
+    name_blocks = soup.find_all("div", class_=re.compile("c-fighter-compare__name"))
+    if not name_blocks:
+        name_blocks = soup.find_all("span", class_=re.compile("c-fighter__name"))
+    for block in name_blocks:
+        text = block.get_text(strip=True)
+        if text:
+            names.append(text)
+    if len(names) < 2:
+        # Запасной вариант: парсим title страницы "Fighter1 vs Fighter2"
+        title = soup.find("title")
+        if title:
+            parts = title.get_text().split(" vs ")
+            if len(parts) == 2:
+                names = [parts[0].strip(), parts[1].strip()]
+    if len(names) < 2:
+        print("Не удалось определить имена бойцов")
+        names = ["Red Corner", "Blue Corner"]
 
-    # Находим все контейнеры раундов
+    # 2. Фото бойцов
+    photos = []
+    photo_containers = soup.find_all("div", class_=re.compile("c-fighter-compare__image"))
+    if not photo_containers:
+        photo_containers = soup.find_all("div", class_=re.compile("c-fighter__image"))
+    for container in photo_containers:
+        img = container.find("img")
+        if img and img.get("src"):
+            src = img["src"]
+            if src.startswith("/"):
+                src = "https://www.ufc.com" + src
+            photos.append(src)
+    # Если нашли меньше двух, дополняем заглушками
+    while len(photos) < 2:
+        photos.append(None)
+
+    # 3. Статистика по раундам
+    # Ищем контейнеры с раундами. У них должен быть внутренний заголовок "Round X"
     round_containers = soup.find_all("div", class_="c-stat-group__container")
-    if not round_containers:
-        print("Не найдены контейнеры раундов (c-stat-group__container)")
-        return None
-
-    f1_sig = []
-    f2_sig = []
-
+    rounds_data = []
     for container in round_containers:
-        # Ищем блок с классом sig_strikes
-        sig_block = container.find("div", class_=lambda c: c and "sig_strikes" in c and "c-stat-metric-compare" in c)
-        if not sig_block:
-            continue
-        # Текст внутри c-stat-metric-compare__metric
-        metric = sig_block.find("div", class_="c-stat-metric-compare__metric")
-        if not metric:
-            continue
-        text = metric.get_text(strip=True)
-        # Извлекаем все числа (например, "16Sig. Strikes31" -> [16, 31])
-        numbers = re.findall(r'\d+', text)
-        if len(numbers) >= 2:
-            f1_sig.append(int(numbers[0]))
-            f2_sig.append(int(numbers[1]))
+        # Проверяем, есть ли метка раунда
+        label = container.find(class_=re.compile("c-stat-group__label"))
+        if not label:
+            label = container.find(class_=re.compile("c-stat-group__title"))
+        if label and "round" in label.get_text().lower():
+            # Это раунд
+            sig_block = container.find("div", class_=lambda c: c and "sig_strikes" in c and "c-stat-metric-compare" in c)
+            if sig_block:
+                metric = sig_block.find("div", class_="c-stat-metric-compare__metric")
+                if metric:
+                    nums = re.findall(r'\d+', metric.get_text())
+                    if len(nums) >= 2:
+                        rounds_data.append((int(nums[0]), int(nums[1])))
+        else:
+            # Если метки нет, но контейнер первый или их всего 3/5, считаем раундом (упрощённо)
+            # Но в нашем тестовом примере метки не было, однако мы знаем, что все 4 контейнера были раундами.
+            # Чтобы не потерять, если меток нет – берём все контейнеры с sig_strikes
+            pass
 
-    if not f1_sig:
-        print("Не удалось извлечь значимые удары")
+    # Если меток нет, используем старый метод (все контейнеры с sig_strikes)
+    if not rounds_data:
+        for container in round_containers:
+            sig_block = container.find("div", class_=lambda c: c and "sig_strikes" in c and "c-stat-metric-compare" in c)
+            if sig_block:
+                metric = sig_block.find("div", class_="c-stat-metric-compare__metric")
+                if metric:
+                    nums = re.findall(r'\d+', metric.get_text())
+                    if len(nums) >= 2:
+                        rounds_data.append((int(nums[0]), int(nums[1])))
+
+    if not rounds_data:
+        print("Не найдено данных по раундам")
         return None
 
-    # Дополняем до 5 раундов нулями (если бой ещё идёт)
-    while len(f1_sig) < 5:
-        f1_sig.append(0)
-        f2_sig.append(0)
+    f1_sig = [r[0] for r in rounds_data]
+    f2_sig = [r[1] for r in rounds_data]
+
+    # Определяем завершённость боя
+    body_text = soup.get_text()
+    finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
     return {
-        "rounds": len([x for x in f1_sig if x > 0 or f2_sig[f1_sig.index(x)] > 0]),  # количество активных раундов
-        "f1": f1_sig,
-        "f2": f2_sig,
-        "finished": is_finished
+        "names": names[:2],
+        "photos": photos[:2],
+        "f1_sig": f1_sig,
+        "f2_sig": f2_sig,
+        "finished": finished
     }
 
-# ---------- Генерация картинки (аналогично предыдущей) ----------
-def generate_image(stats):
-    f1, f2 = stats["f1"], stats["f2"]
-    # Берём только не нулевые раунды для отображения
-    non_zero = [(i, s1, s2) for i, (s1, s2) in enumerate(zip(f1, f2)) if s1 > 0 or s2 > 0]
-    if not non_zero:
-        non_zero = [(0, 0, 0)]  # заглушка
+# ---------- Генерация картинки с фото и именами ----------
+def generate_image(data):
+    names = data["names"]
+    photos = data["photos"]
+    f1, f2 = data["f1_sig"], data["f2_sig"]
 
-    max_val = max(max(f1), max(f2), 1)
-    bar_max_width = 220
-    img_w, img_h = 480, 50 + len(non_zero) * 55 + 30
-    img = Image.new("RGB", (img_w, img_h), "white")
+    # Параметры изображения
+    width, height = 600, 400
+    img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
+
+    # Шрифты
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-        small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
     except:
-        font = small = ImageFont.load_default()
+        font_title = font_name = font_small = ImageFont.load_default()
 
-    draw.text((10, 10), "Significant Strikes", fill="black", font=font)
-    y = 40
-    for idx, s1, s2 in non_zero:
+    # Загружаем фото бойцов (если есть URL)
+    def load_photo(url):
+        if not url:
+            return None
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                photo_img = Image.open(io.BytesIO(r.content)).resize((60, 60))
+                return photo_img
+        except:
+            pass
+        return None
+
+    photo1 = load_photo(photos[0])
+    photo2 = load_photo(photos[1])
+
+    # Размещение фото и имён
+    if photo1:
+        img.paste(photo1, (20, 20))
+    draw.text((90, 30), names[0], fill="red", font=font_name)
+
+    if photo2:
+        img.paste(photo2, (width - 80, 20))
+    draw.text((width - 90 - draw.textlength(names[1], font=font_name), 30), names[1], fill="blue", font=font_name)
+
+    # Шкалы значимых ударов
+    max_val = max(max(f1), max(f2), 1)
+    bar_max_width = 200
+    y = 100
+    draw.text((20, y), "Significant Strikes", fill="black", font=font_title)
+    y += 40
+
+    for idx, (s1, s2) in enumerate(zip(f1, f2)):
         round_num = idx + 1
-        draw.text((10, y), f"R{round_num}", fill="black", font=font)
-        # Красный
+        draw.text((20, y), f"R{round_num}", fill="black", font=font_small)
+        # Красный боец
         w1 = int((s1 / max_val) * bar_max_width)
-        draw.rectangle([(60, y+2), (60 + w1, y+20)], fill="red")
-        draw.text((65, y+3), str(s1), fill="white", font=small)
-        # Синий
+        draw.rectangle([(70, y+2), (70 + w1, y+18)], fill="red")
+        draw.text((75, y+3), str(s1), fill="white", font=font_small)
+        # Синий боец
         w2 = int((s2 / max_val) * bar_max_width)
-        draw.rectangle([(60, y+22), (60 + w2, y+40)], fill="blue")
-        draw.text((65, y+23), str(s2), fill="white", font=small)
-        y += 55
+        draw.rectangle([(70, y+22), (70 + w2, y+38)], fill="blue")
+        draw.text((75, y+23), str(s2), fill="white", font=font_small)
+        y += 45
 
-    status = "Fight finished" if stats.get("finished") else "LIVE"
-    draw.text((10, y+5), status, fill="green" if stats["finished"] else "red", font=font)
+    # Статус
+    if data["finished"]:
+        status = "Fight finished"
+        color = "green"
+    else:
+        status = "LIVE"
+        color = "red"
+    draw.text((20, y+10), status, fill=color, font=font_title)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -149,16 +230,16 @@ def main():
                 print("Бой завершён ранее.")
                 return
 
-    stats = get_fight_stats()
-    if not stats:
-        print("Статистика недоступна.")
+    data = get_fight_data()
+    if not data:
+        print("Данные не получены.")
         return
 
-    if stats["finished"]:
+    if data["finished"]:
         with open(STATE_FILE, "w") as f:
             json.dump({"finished": True}, f)
 
-    img_bytes = generate_image(stats)
+    img_bytes = generate_image(data)
 
     if os.path.exists(MSG_ID_FILE):
         with open(MSG_ID_FILE, "r") as f:
