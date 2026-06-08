@@ -12,7 +12,9 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-EVENT_URL = os.environ["EVENT_URL"]   # https://www.ufc.com/event/ufc-fight-night-june-06-2026
+# Ручные ID (обязательно задать в секретах)
+EVENT_ID = int(os.environ["EVENT_ID"])
+FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]   # "12827,12761,12825,..."
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -39,53 +41,10 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Получение event_id и списка fight_id ----------
+# ---------- Получение данных события (только ручной ввод) ----------
 def get_event_data():
-    slug = EVENT_URL.rstrip("/").split("/")[-1]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": EVENT_URL,
-        "X-Requested-With": "XMLHttpRequest"
-    }
-
-    # Способ 1: через API
-    api_url = f"https://www.ufc.com/api/event/{slug}"
-    try:
-        resp = requests.get(api_url, headers=headers, timeout=15)
-        if resp.status_code == 200 and resp.text.strip().startswith('{'):
-            data = resp.json()
-            event_id = data.get("eventId")
-            if event_id:
-                fights = data.get("fights", [])
-                fight_ids = [f["fightId"] for f in fights if "fightId" in f]
-                if fight_ids:
-                    return event_id, fight_ids
-    except:
-        pass
-
-    # Способ 2: парсинг HTML страницы события (поиск eventId в JS)
-    resp = requests.get(EVENT_URL, headers={"User-Agent": headers["User-Agent"]}, timeout=15)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    # Ищем в скриптах drupalSettings или window.__INITIAL_STATE__
-    for script in soup.find_all("script"):
-        if script.string and "eventId" in script.string:
-            match = re.search(r'"eventId"\s*:\s*"(\d+)"', script.string)
-            if not match:
-                match = re.search(r'"eventId"\s*:\s*(\d+)', script.string)
-            if match:
-                event_id = int(match.group(1))
-                # Теперь ищем fight_id в том же скрипте или в хэшах
-                # Часто fightId перечислены рядом: "fights":[{"fightId":"12711"},...]
-                fights_match = re.findall(r'"fightId"\s*:\s*"(\d+)"', script.string)
-                if not fights_match:
-                    fights_match = re.findall(r'"fightId"\s*:\s*(\d+)', script.string)
-                if fights_match:
-                    fight_ids = [int(f) for f in fights_match]
-                    return event_id, fight_ids
-
-    # Если ничего не помогло – исключение
-    raise Exception("Не удалось получить event_id и fight_ids ни через API, ни из HTML.")
+    fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
+    return EVENT_ID, fight_ids
 
 # ---------- Парсинг статистики боя ----------
 def get_fight_stats(event_id, fight_id):
@@ -164,7 +123,7 @@ def get_fight_stats(event_id, fight_id):
         "finished": finished
     }
 
-# ---------- Генерация картинки (без изменений) ----------
+# ---------- Генерация картинки ----------
 def generate_image(data):
     names = data["names"]
     photos = data["photos"]
@@ -233,7 +192,7 @@ def generate_image(data):
     buf.seek(0)
     return buf
 
-# ---------- Основная логика (без изменений) ----------
+# ---------- Основная логика ----------
 def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
