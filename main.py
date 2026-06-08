@@ -44,18 +44,25 @@ def edit_message_media(message_id, photo_bytes, caption=""):
 def get_event_data():
     fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
     return EVENT_ID, fight_ids
-
+    
 def parse_metric_from_element(metric_el):
-    """Извлекает (value1, percent1), (value2, percent2) из элемента метрики."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
     blue_num = metric_el.find("span", class_="c-stat-metric-compare__value_2 c-stat-metric-compare__number")
     blue_pct = metric_el.find("span", class_="c-stat-metric-compare__percent_2")
 
-    v1 = int(red_num.get_text(strip=True)) if red_num else 0
-    p1 = int(red_pct.get_text(strip=True)) if red_pct and red_pct.get_text(strip=True) else 0
-    v2 = int(blue_num.get_text(strip=True)) if blue_num else 0
-    p2 = int(blue_pct.get_text(strip=True)) if blue_pct and blue_pct.get_text(strip=True) else 0
+    # Извлекаем цифры из текста
+    import re
+    def extract_int(span):
+        if span:
+            digits = re.sub(r'\D', '', span.get_text(strip=True))
+            return int(digits) if digits else 0
+        return 0
+
+    v1 = extract_int(red_num)
+    p1 = extract_int(red_pct)
+    v2 = extract_int(blue_num)
+    p2 = extract_int(blue_pct)
     return (v1, p1), (v2, p2)
 
 def get_fight_stats(event_id, fight_id):
