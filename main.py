@@ -46,7 +46,6 @@ def get_event_data():
     return EVENT_ID, fight_ids
 
 def parse_metric(text, metric_name):
-    """Извлекает абсолютные числа для метрики из текста."""
     pattern = re.compile(
         r'(\d+)\s*\(\d+%\)\s*' + re.escape(metric_name) + r'\s*(\d+)\s*\(\d+%\)',
         re.IGNORECASE
@@ -74,11 +73,9 @@ def get_fight_stats(event_id, fight_id):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Статус завершения
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Имена и фото из JSON (drupalSettings) ---
     names = []
     photos = []
     try:
@@ -107,7 +104,6 @@ def get_fight_stats(event_id, fight_id):
     while len(photos) < 2:
         photos.append(None)
 
-    # --- Статистика по раундам ---
     containers = soup.find_all("div", class_="c-stat-group__container")
     round_data = []
     for cont in containers:
@@ -150,7 +146,7 @@ def get_fight_stats(event_id, fight_id):
         "finished": finished
     }
 
-# ---------- Генерация картинки (исправленный дизайн) ----------
+# ---------- Генерация картинки (исправленная загрузка фото) ----------
 def generate_image(data):
     names = data["names"]
     photos = data["photos"]
@@ -170,23 +166,22 @@ def generate_image(data):
     except:
         font_title = font_name = font_metric = font_number = ImageFont.load_default()
 
-    # Загрузка фото с сохранением пропорций
+    # ---------- ИСПРАВЛЕННАЯ ЗАГРУЗКА ФОТО ----------
     def load_photo(url):
         if not url:
             return None
+        headers = {"User-Agent": "Mozilla/5.0"}   # <-- добавляем заголовок
         try:
-            r = requests.get(url, timeout=8)
+            r = requests.get(url, headers=headers, timeout=10)
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                # Ресайз с сохранением пропорций, чтобы вписаться в 80x80
                 img.thumbnail((80, 80), Image.LANCZOS)
-                # Круглая маска
                 mask = Image.new("L", (80, 80), 0)
                 ImageDraw.Draw(mask).ellipse((0, 0, 80, 80), fill=255)
                 img.putalpha(mask)
                 return img
-        except:
-            pass
+        except Exception as e:
+            print(f"Ошибка загрузки фото {url}: {e}")
         return None
 
     photo1 = load_photo(photos[0])
@@ -198,11 +193,10 @@ def generate_image(data):
         vals = [v for rd in rounds for v in rd.get(m, (0,0))]
         max_vals[m] = max(vals) if vals else 1
 
-    # Размеры
     img_w = 700
     header_h = 110
     metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
-    row_h = 38      # высота строки метрики (шкалы + подписи)
+    row_h = 38
     num_metrics = len(metrics)
     num_rounds = len(rounds)
     img_h = header_h + num_rounds * (num_metrics * row_h + 30) + 50
@@ -210,7 +204,6 @@ def generate_image(data):
     img = Image.new("RGB", (img_w, img_h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Шапка: фото и имена
     y = 20
     if photo1:
         img.paste(photo1, (25, y), photo1)
@@ -220,7 +213,6 @@ def generate_image(data):
     name2_w = draw.textlength(names[1], font=font_name)
     draw.text((img_w - 115 - name2_w, y + 28), names[1], fill=BLUE, font=font_name)
 
-    # Линия
     draw.line([(20, y + 85), (img_w - 20, y + 85)], fill=(100, 100, 130), width=2)
     y = header_h
 
@@ -234,34 +226,25 @@ def generate_image(data):
             f1, f2 = rd.get(m, (0,0))
             max_m = max_vals[m] if max_vals[m] > 0 else 1
             bar_max = 150
-
             w1 = int((f1 / max_m) * bar_max) if f1 > 0 else 0
             w2 = int((f2 / max_m) * bar_max) if f2 > 0 else 0
 
-            # Название метрики (по центру над шкалами)
             metric_text = m
             text_w = draw.textlength(metric_text, font=font_metric)
             draw.text((center_x - text_w//2, y), metric_text, fill=TEXT, font=font_metric)
 
-            # Шкалы на одном уровне (y+16)
             bar_y = y + 18
-
-            # Красная шкала (влево от центра)
             red_left = center_x - w1 - 5
             draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
-            # Число красного бойца (слева от шкалы)
             draw.text((red_left - 25, bar_y - 2), str(f1), fill=RED, font=font_number)
 
-            # Синяя шкала (вправо от центра)
             blue_right = center_x + 5 + w2
             draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
-            # Число синего бойца (справа от шкалы)
             draw.text((blue_right + 5, bar_y - 2), str(f2), fill=BLUE, font=font_number)
 
-            y += row_h   # следующая метрика
-        y += 10  # отступ между раундами
+            y += row_h
+        y += 10
 
-    # Статус
     if data.get("finished"):
         status = "Fight Finished"
         color = (80, 200, 80)
