@@ -13,11 +13,12 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
 EVENT_ID = int(os.environ["EVENT_ID"])
-FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]
+FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]   # "12827,12761,..."
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
 
+# ---------- Telegram API ----------
 def send_photo(photo_bytes, caption=""):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     files = {"photo": ("stats.png", photo_bytes, "image/png")}
@@ -39,15 +40,19 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
+# ---------- Извлечение данных ----------
 def get_event_data():
     fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
     return EVENT_ID, fight_ids
 
 def parse_metric_from_element(metric_el):
+    """Извлекает (value, percent, attempts_str) для красного и синего углов."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
+    red_att = metric_el.find("span", class_="c-stat-metric-compare__value_of")
     blue_num = metric_el.find("span", class_="c-stat-metric-compare__value_2 c-stat-metric-compare__number")
     blue_pct = metric_el.find("span", class_="c-stat-metric-compare__percent_2")
+    blue_att = metric_el.find("span", class_="c-stat-metric-compare__value_2_of")
 
     def extract_int(span):
         if span:
@@ -55,11 +60,23 @@ def parse_metric_from_element(metric_el):
             return int(digits) if digits else 0
         return 0
 
+    def extract_attempts_text(span):
+        if span:
+            text = span.get_text(strip=True)
+            # Оставляем только "of X"
+            match = re.search(r'of\s+\d+', text)
+            if match:
+                return match.group(0)
+        return ""
+
     v1 = extract_int(red_num)
     p1 = extract_int(red_pct)
+    a1_text = extract_attempts_text(red_att)
     v2 = extract_int(blue_num)
     p2 = extract_int(blue_pct)
-    return (v1, p1), (v2, p2)
+    a2_text = extract_attempts_text(blue_att)
+
+    return (v1, p1, a1_text), (v2, p2, a2_text)
 
 def get_fight_stats(event_id, fight_id):
     url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post?t={int(time.time())}"
@@ -73,7 +90,7 @@ def get_fight_stats(event_id, fight_id):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Победитель
+    # --- Победитель ---
     winner_idx = -1
     fighter_img_div = soup.find("div", class_="fighter-img")
     if fighter_img_div:
@@ -97,7 +114,7 @@ def get_fight_stats(event_id, fight_id):
         except:
             pass
 
-    # Имена и фото из JSON
+    # --- Имена и фото из JSON ---
     names = []
     photos = []
     try:
@@ -124,60 +141,41 @@ def get_fight_stats(event_id, fight_id):
     while len(photos) < 2:
         photos.append(None)
 
-    # Статус завершения
+    # --- Статус завершения ---
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- ДИАГНОСТИКА КОНТЕЙНЕРОВ ---
-    containers = soup.find_all("div", class_="c-stat-group__container")
-    print(f"Найдено контейнеров c-stat-group__container: {len(containers)}")
-    for i, cont in enumerate(containers):
-        label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__label"))
-        if not label:
-            label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__title"))
-        title = label.get_text(strip=True) if label else "БЕЗ НАЗВАНИЯ"
-        print(f"  Контейнер {i}: заголовок = '{title}'")
-        # Проверим наличие блока метрик
-        metrics_block = cont.find("div", class_="c-stat-metric-compare-group")
-        if metrics_block:
-            # Проверим каждую метрику
-            for metric_class in ["total_strikes", "takedowns", "sig_strikes", "knockdowns"]:
-                el = metrics_block.find("div", class_=metric_class)
-                if el:
-                    print(f"    Метрика {metric_class}: найдена")
-                else:
-                    print(f"    Метрика {metric_class}: НЕ НАЙДЕНА")
-        else:
-            print("    Блок метрик не найден")
-
-    # Обычный парсинг (для дальнейшего использования)
+    # --- Обход табов и панелей ---
+    tab_buttons = soup.select("button.c-tabs__nav-btn")
+    tab_panels = soup.select("div.c-tabs__pane")
     round_data = []
-    for cont in containers:
-        label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__label"))
-        if not label:
-            label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__title"))
-        title = label.get_text(strip=True) if label else ""
-        if not title:
-            if not round_data:
-                title = "Full Fight"
-            else:
-                continue
 
-        metrics_block = cont.find("div", class_="c-stat-metric-compare-group")
+    # Сопоставляем кнопки и панели (должны быть в одном порядке)
+    for btn, panel in zip(tab_buttons, tab_panels):
+        round_title = btn.get_text(strip=True)
+        if round_title == "Full Fight":
+            continue   # пропускаем общий итог, как вы просили
+
+        # Внутри панели ищем контейнер статистики
+        container = panel.find("div", class_="c-stat-group__container")
+        if not container:
+            continue
+        metrics_block = container.find("div", class_="c-stat-metric-compare-group")
         if not metrics_block:
             continue
+
         total_strikes_el = metrics_block.find("div", class_="total_strikes")
         takedowns_el = metrics_block.find("div", class_="takedowns")
         sig_strikes_el = metrics_block.find("div", class_="sig_strikes")
         knockdowns_el = metrics_block.find("div", class_="knockdowns")
 
-        total_s = parse_metric_from_element(total_strikes_el) if total_strikes_el else ((0,0),(0,0))
-        takedowns = parse_metric_from_element(takedowns_el) if takedowns_el else ((0,0),(0,0))
-        sig_s = parse_metric_from_element(sig_strikes_el) if sig_strikes_el else ((0,0),(0,0))
-        knockdowns = parse_metric_from_element(knockdowns_el) if knockdowns_el else ((0,0),(0,0))
+        total_s = parse_metric_from_element(total_strikes_el) if total_strikes_el else ((0,0,""),(0,0,""))
+        takedowns = parse_metric_from_element(takedowns_el) if takedowns_el else ((0,0,""),(0,0,""))
+        sig_s = parse_metric_from_element(sig_strikes_el) if sig_strikes_el else ((0,0,""),(0,0,""))
+        knockdowns = parse_metric_from_element(knockdowns_el) if knockdowns_el else ((0,0,""),(0,0,""))
 
         round_data.append({
-            "title": title,
+            "title": round_title,
             "Total Strikes": total_s,
             "Takedowns": takedowns,
             "Sig. Strikes": sig_s,
@@ -196,11 +194,159 @@ def get_fight_stats(event_id, fight_id):
         "finished": finished
     }
 
-# ---------- Генерация картинки (упрощённая для теста) ----------
+# ---------- Генерация картинки ----------
 def generate_image(data):
-    # Просто отправляем текстовое сообщение, чтобы не усложнять
-    return None
+    names = data["names"]
+    photos = data["photos"]
+    winner_idx = data.get("winner_idx", -1)
+    rounds = data["rounds"]
 
+    BG = (18, 22, 35)
+    TEXT = (220, 220, 220)
+    RED = (225, 65, 65)
+    BLUE = (65, 125, 225)
+    GOLD = (255, 210, 50)
+    GREEN = (80, 200, 80)
+
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+        font_number = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+        font_initials = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except:
+        font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
+
+    def load_photo(url):
+        if not url:
+            return None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Referer": "https://www.ufc.com/",
+            "Accept": "image/webp,image/png,image/*,*/*;q=0.8"
+        }
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                img.thumbnail((72, 72), Image.LANCZOS)
+                mask = Image.new("L", (72, 72), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+                img.putalpha(mask)
+                return img
+        except:
+            pass
+        return None
+
+    def draw_initials(draw, xy, name, color):
+        x, y = xy
+        r = 36
+        draw.ellipse([x, y, x+72, y+72], fill=color)
+        initials = "".join([n[0].upper() for n in name.split() if n])[:2]
+        bbox = draw.textbbox((0,0), initials, font=font_initials)
+        w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
+
+    photo1 = load_photo(photos[0])
+    photo2 = load_photo(photos[1])
+
+    # WIN подпись
+    name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
+    name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
+
+    # Нормировка шкал
+    max_vals = {}
+    for m in ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]:
+        vals = []
+        for rd in rounds:
+            (v1, _, _), (v2, _, _) = rd.get(m, ((0,0,""),(0,0,"")))
+            vals.extend([v1, v2])
+        max_vals[m] = max(vals) if vals else 1
+
+    # Размеры
+    img_w = 760
+    header_h = 120
+    metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
+    row_h = 46
+    num_metrics = len(metrics)
+    num_rounds = len(rounds)
+    img_h = header_h + num_rounds * (num_metrics * row_h + 30) + 60
+
+    img = Image.new("RGB", (img_w, img_h), BG)
+    draw = ImageDraw.Draw(img)
+
+    y = 20
+    if photo1:
+        img.paste(photo1, (25, y), photo1)
+    else:
+        draw_initials(draw, (25, y), names[0], RED)
+    draw.text((110, y+28), name1, fill=RED, font=font_name)
+
+    if photo2:
+        img.paste(photo2, (img_w-97, y), photo2)
+    else:
+        draw_initials(draw, (img_w-97, y), names[1], BLUE)
+    name2_w = draw.textlength(name2, font=font_name)
+    draw.text((img_w - 110 - name2_w, y+28), name2, fill=BLUE, font=font_name)
+
+    draw.line([(20, y+85), (img_w-20, y+85)], fill=(100, 100, 130), width=2)
+    y = header_h
+    center_x = img_w // 2
+
+    for rd in rounds:
+        title = rd["title"]
+        draw.text((30, y), title, fill=GOLD, font=font_title)
+        y += 30
+        for m in metrics:
+            (v1, p1, a1_text), (v2, p2, a2_text) = rd.get(m, ((0,0,""),(0,0,"")))
+            max_m = max_vals[m] if max_vals[m] > 0 else 1
+            bar_max = 150
+            w1 = int((v1 / max_m) * bar_max) if v1 > 0 else 0
+            w2 = int((v2 / max_m) * bar_max) if v2 > 0 else 0
+
+            # Название метрики по центру
+            text_w = draw.textlength(m, font=font_metric)
+            draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
+
+            bar_y = y + 18
+            # Красная шкала (влево)
+            red_left = center_x - w1 - 5
+            draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
+            # Текст для красного
+            if m == "Takedowns" and a1_text:
+                red_text = f"{v1} {a1_text} ({p1}%)" if p1 > 0 else f"{v1} {a1_text}"
+            else:
+                red_text = f"{v1} ({p1}%)" if p1 > 0 else str(v1)
+            rtext_w = draw.textlength(red_text, font=font_number)
+            draw.text((red_left - 5 - rtext_w, bar_y - 2), red_text, fill=RED, font=font_number)
+
+            # Синяя шкала (вправо)
+            blue_right = center_x + 5 + w2
+            draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
+            if m == "Takedowns" and a2_text:
+                blue_text = f"{v2} {a2_text} ({p2}%)" if p2 > 0 else f"{v2} {a2_text}"
+            else:
+                blue_text = f"{v2} ({p2}%)" if p2 > 0 else str(v2)
+            draw.text((blue_right + 5, bar_y - 2), blue_text, fill=BLUE, font=font_number)
+
+            y += row_h
+        y += 10
+
+    # Статус
+    if data.get("finished"):
+        status = "Fight Finished"
+        color = GREEN
+    else:
+        status = "LIVE"
+        color = RED
+    draw.text((30, y + 10), status, fill=color, font=font_title)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+# ---------- Основная логика ----------
 def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -228,11 +374,39 @@ def main():
         print("Не удалось получить данные боя.")
         return
 
-    if data.get("not_started"):
+    if data.get("not_started") and not os.path.exists(MSG_ID_FILE):
         print("Бой ещё не начался, ждём.")
         return
 
-    print("Данные боя получены успешно!")
+    img_bytes = generate_image(data)
+
+    if os.path.exists(MSG_ID_FILE):
+        with open(MSG_ID_FILE, "r") as f:
+            msg_id = int(f.read().strip())
+        edit_message_media(msg_id, img_bytes, caption="")
+        print(f"Сообщение {msg_id} обновлено.")
+    else:
+        result = send_photo(img_bytes, caption="")
+        if result.get("ok"):
+            msg_id = result["result"]["message_id"]
+            with open(MSG_ID_FILE, "w") as f:
+                f.write(str(msg_id))
+            print(f"Новое сообщение {msg_id} создано.")
+        else:
+            print("Ошибка отправки:", result)
+            return
+
+    if data.get("finished"):
+        if os.path.exists(MSG_ID_FILE):
+            os.remove(MSG_ID_FILE)
+        state["current_index"] += 1
+        if state["current_index"] >= len(state["fight_ids"]):
+            state["finished_all"] = True
+            print("Все бои турнира обработаны.")
+        else:
+            print(f"Переход к следующему бою ID {state['fight_ids'][state['current_index']]}")
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
 
 if __name__ == "__main__":
     main()
