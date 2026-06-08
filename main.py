@@ -46,7 +46,7 @@ def get_event_data():
     return EVENT_ID, fight_ids
 
 def parse_metric_from_element(metric_el):
-    """Извлекает (value, percent, attempts_str) для красного и синего углов."""
+    """Извлекает (value, percent, attempts_str) для красного и синего."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
     red_att = metric_el.find("span", class_="c-stat-metric-compare__value_of")
@@ -63,7 +63,6 @@ def parse_metric_from_element(metric_el):
     def extract_attempts_text(span):
         if span:
             text = span.get_text(strip=True)
-            # Оставляем только "of X"
             match = re.search(r'of\s+\d+', text)
             if match:
                 return match.group(0)
@@ -141,22 +140,20 @@ def get_fight_stats(event_id, fight_id):
     while len(photos) < 2:
         photos.append(None)
 
-    # --- Статус завершения ---
+    # Статус завершения
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Обход табов и панелей ---
+    # --- Обход вкладок (только раунды, без Full Fight) ---
     tab_buttons = soup.select("button.c-tabs__nav-btn")
     tab_panels = soup.select("div.c-tabs__pane")
     round_data = []
 
-    # Сопоставляем кнопки и панели (должны быть в одном порядке)
     for btn, panel in zip(tab_buttons, tab_panels):
         round_title = btn.get_text(strip=True)
         if round_title == "Full Fight":
-            continue   # пропускаем общий итог, как вы просили
+            continue   # пропускаем Full Fight
 
-        # Внутри панели ищем контейнер статистики
         container = panel.find("div", class_="c-stat-group__container")
         if not container:
             continue
@@ -250,7 +247,6 @@ def generate_image(data):
     photo1 = load_photo(photos[0])
     photo2 = load_photo(photos[1])
 
-    # WIN подпись
     name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
     name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
 
@@ -263,10 +259,9 @@ def generate_image(data):
             vals.extend([v1, v2])
         max_vals[m] = max(vals) if vals else 1
 
-    # Размеры
     img_w = 760
     header_h = 120
-    metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
+    metrics = ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]
     row_h = 46
     num_metrics = len(metrics)
     num_rounds = len(rounds)
@@ -304,7 +299,6 @@ def generate_image(data):
             w1 = int((v1 / max_m) * bar_max) if v1 > 0 else 0
             w2 = int((v2 / max_m) * bar_max) if v2 > 0 else 0
 
-            # Название метрики по центру
             text_w = draw.textlength(m, font=font_metric)
             draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
 
@@ -312,7 +306,6 @@ def generate_image(data):
             # Красная шкала (влево)
             red_left = center_x - w1 - 5
             draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
-            # Текст для красного
             if m == "Takedowns" and a1_text:
                 red_text = f"{v1} {a1_text} ({p1}%)" if p1 > 0 else f"{v1} {a1_text}"
             else:
@@ -332,7 +325,6 @@ def generate_image(data):
             y += row_h
         y += 10
 
-    # Статус
     if data.get("finished"):
         status = "Fight Finished"
         color = GREEN
