@@ -29,6 +29,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
           EVENT_URL: ${{ secrets.EVENT_URL }}
-          EVENT_ID: ${{ secrets.EVENT_ID }}
-          FIGHT_IDS: ${{ secrets.FIGHT_IDS }}
         run: python main.py
