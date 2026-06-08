@@ -61,35 +61,42 @@ def fetch_event_data_from_url(event_url):
     fight_ids = [int(card["data-fmid"]) for card in cards]
     fight_ids.reverse()  # теперь первый бой → главный
 
-    # --- Определяем event_id через перенаправление ---
+    # --- Определяем event_id через редирект (разрешаем переход) ---
     first_fight_id = fight_ids[0]
     test_url = f"https://www.ufc.com/matchup/0/{first_fight_id}/post"
     try:
-        # Запрещаем автоматическое следование редиректу, чтобы поймать Location
-        r = requests.get(test_url, headers=headers, allow_redirects=False, timeout=10)
-        if r.status_code in (301, 302, 307, 308) and "Location" in r.headers:
-            redirect_url = r.headers["Location"]
-            # Ожидаемый формат: /matchup/1313/12827/post или https://www.ufc.com/matchup/1313/12827/post
-            match = re.search(r"/matchup/(\d+)/\d+", redirect_url)
-            if match:
-                event_id = int(match.group(1))
-                print(f"Event ID определён через редирект: {event_id}")
-                return event_id, fight_ids
+        # Разрешаем редирект и смотрим итоговый URL
+        r = requests.get(test_url, headers=headers, allow_redirects=True, timeout=10)
+        final_url = r.url
+        # Ищем /matchup/event_id/fight_id в конечном URL
+        match = re.search(r"/matchup/(\d+)/\d+", final_url)
+        if match:
+            event_id = int(match.group(1))
+            print(f"Event ID определён через редирект: {event_id}")
+            return event_id, fight_ids
     except Exception as e:
-        print(f"Попытка редиректа не удалась: {e}")
+        print(f"Ошибка при редиректе: {e}")
 
-    # Если редирект не сработал – падаем с ошибкой (но такого быть не должно)
-    raise Exception("Не удалось определить Event ID. Попробуйте позже или укажите EVENT_ID вручную.")
+    # Если редирект не помог – пробуем API (запасной вариант)
+    slug = event_url.rstrip("/").split("/")[-1]
+    api_url = f"https://www.ufc.com/api/event/{slug}"
+    api_headers = {
+        "User-Agent": headers["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Referer": event_url,
+        "X-Requested-With": "XMLHttpRequest"
+    }
+    try:
+        api_resp = requests.get(api_url, headers=api_headers, timeout=15)
+        if api_resp.status_code == 200 and api_resp.text.strip().startswith('{'):
+            data = api_resp.json()
+            if "eventId" in data:
+                return data["eventId"], fight_ids
+    except:
+        pass
 
-def get_event_data():
-    if EVENT_URL:
-        print(f"Автоматический режим: анализируем {EVENT_URL}")
-        return fetch_event_data_from_url(EVENT_URL)
-    elif MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
-        fight_ids = [int(f.strip()) for f in MANUAL_FIGHT_IDS.split(",") if f.strip()]
-        return int(MANUAL_EVENT_ID), fight_ids
-    else:
-        raise Exception("Не задан ни EVENT_URL, ни EVENT_ID/FIGHT_IDS.")
+    # Всё равно не получилось – просим ручного ввода
+    raise Exception("Не удалось определить Event ID автоматически. Попробуйте позже или укажите EVENT_ID вручную.")
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
