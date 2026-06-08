@@ -12,7 +12,7 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-EVENT_URL = os.environ["EVENT_URL"]
+EVENT_URL = os.environ["EVENT_URL"]   # https://www.ufc.com/event/ufc-fight-night-june-06-2026
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -39,42 +39,29 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Извлечение данных события ----------
+# ---------- Получение event_id и списка fight_id из API ----------
 def get_event_data():
+    # Извлекаем slug из URL (последняя часть после /event/)
+    slug = EVENT_URL.rstrip("/").split("/")[-1]
+    api_url = f"https://www.ufc.com/api/event/{slug}"
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(EVENT_URL, headers=headers, timeout=15)
+    resp = requests.get(api_url, headers=headers, timeout=15)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    data = resp.json()
 
-    # Ищем все ссылки, ведущие на /matchup/...
-    matchup_links = soup.find_all("a", href=re.compile(r"/matchup/\d+/\d+"))
-    if not matchup_links:
-        matchup_links = soup.find_all("a", href=re.compile(r"/matchup/\d+/\d+/post"))
+    event_id = data.get("eventId")
+    if not event_id:
+        raise Exception("Не найден eventId в JSON API")
 
-    if not matchup_links:
-        raise Exception("Не найдены ссылки на бои (matchup). Возможно, кард ещё не опубликован.")
+    fights = data.get("fights", [])
+    if not fights:
+        raise Exception("Массив fights пуст или отсутствует")
 
-    # Извлекаем event_id из первой попавшейся ссылки
-    first_href = matchup_links[0]["href"]
-    match = re.search(r"/matchup/(\d+)/\d+", first_href)
-    if not match:
-        raise Exception("Не удалось извлечь Event ID из ссылки")
-    event_id = int(match.group(1))
-
-    # Собираем все fight_id из хэшей (#12711)
-    fight_ids = set()
-    for a in soup.find_all("a", href=re.compile(r'#\d+')):
-        href = a["href"]
-        if href.startswith("#"):
-            try:
-                fid = int(href[1:])
-                fight_ids.add(fid)
-            except:
-                pass
+    # Собираем fightId в порядке появления (обычно от первого к главному)
+    fight_ids = [f["fightId"] for f in fights if "fightId" in f]
     if not fight_ids:
-        raise Exception("Не найдены ID боёв (хэши #...). Кард, вероятно, пуст.")
+        raise Exception("Не найдены fightId в массиве fights")
 
-    fight_ids = sorted(list(fight_ids))
     return event_id, fight_ids
 
 # ---------- Парсинг статистики боя ----------
@@ -227,7 +214,6 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    # Загрузка или создание состояния
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
@@ -243,27 +229,23 @@ def main():
             json.dump(state, f)
 
     if state.get("finished_all"):
-        print("Все бои турнира завершены — работа скрипта остановлена.")
+        print("Все бои турнира завершены.")
         return
 
     current_fight_id = state["fight_ids"][state["current_index"]]
     event_id = state["event_id"]
 
-    # Получаем статистику текущего боя
     data = get_fight_stats(event_id, current_fight_id)
     if not data:
-        print("Не удалось получить данные боя — прерываем до следующего запуска.")
+        print("Не удалось получить данные боя.")
         return
 
-    # Если бой ещё не начался (нет раундов) и сообщение ещё не создавалось — не спамим
     if data.get("not_started") and not os.path.exists(MSG_ID_FILE):
         print("Бой ещё не начался, ждём.")
         return
 
-    # Генерируем картинку
     img_bytes = generate_image(data)
 
-    # Отправляем новое сообщение или редактируем существующее
     if os.path.exists(MSG_ID_FILE):
         with open(MSG_ID_FILE, "r") as f:
             msg_id = int(f.read().strip())
@@ -280,9 +262,7 @@ def main():
             print("Ошибка отправки:", result)
             return
 
-    # Если бой завершился — переходим к следующему
     if data.get("finished"):
-        # Удаляем сохранённый message_id, чтобы для следующего боя создать новое сообщение
         if os.path.exists(MSG_ID_FILE):
             os.remove(MSG_ID_FILE)
         state["current_index"] += 1
@@ -290,7 +270,7 @@ def main():
             state["finished_all"] = True
             print("Все бои турнира обработаны.")
         else:
-            print(f"Переходим к следующему бою ID {state['fight_ids'][state['current_index']]}")
+            print(f"Переход к следующему бою ID {state['fight_ids'][state['current_index']]}")
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
 
