@@ -40,13 +40,13 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Вспомогательные функции ----------
+# ---------- Извлечение данных боя ----------
 def get_event_data():
     fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
     return EVENT_ID, fight_ids
 
 def parse_metric(text, metric_name):
-    """Извлекает абсолютные числа для метрики."""
+    """Извлекает абсолютные числа для метрики из текста."""
     pattern = re.compile(
         r'(\d+)\s*\(\d+%\)\s*' + re.escape(metric_name) + r'\s*(\d+)\s*\(\d+%\)',
         re.IGNORECASE
@@ -54,7 +54,6 @@ def parse_metric(text, metric_name):
     match = pattern.search(text)
     if match:
         return int(match.group(1)), int(match.group(2))
-    # Запасной: два числа, разделённые названием метрики
     parts = text.split(metric_name)
     if len(parts) == 2:
         nums_left = re.findall(r'(\d+)\s*\(\d+%\)', parts[0])
@@ -79,58 +78,35 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Имена бойцов (улучшенный поиск) ---
+    # --- Имена и фото из JSON (drupalSettings) ---
     names = []
-    # 1. Ищем в теге <title>
-    title_tag = soup.find("title")
-    if title_tag:
-        title = title_tag.get_text()
-        # Разбиваем по " vs " и очищаем от дополнительной информации
-        parts = re.split(r'\s+vs\.?\s+', title)
-        if len(parts) >= 2:
-            # Убираем часть после "|" если есть
-            name1 = parts[0].strip()
-            name2 = parts[1].strip()
-            # Обрезаем возможный суффикс " | UFC"
-            name2 = re.split(r'\s+\|', name2)[0].strip()
-            names = [name1, name2]
+    photos = []
+    try:
+        json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
+        if json_script and json_script.string:
+            data = json.loads(json_script.string)
+            athletes = data.get("matchup", {}).get("athletes", [])
+            if len(athletes) >= 2:
+                for athlete in athletes[:2]:
+                    given = athlete.get("name_given", "")
+                    family = athlete.get("name_family", "")
+                    full_name = f"{given} {family}".strip()
+                    if not full_name:
+                        full_name = "Unknown"
+                    names.append(full_name)
+                    img_url = athlete.get("img", "")
+                    if img_url and img_url.startswith("http"):
+                        photos.append(img_url)
+                    else:
+                        photos.append(None)
+    except Exception as e:
+        print(f"Ошибка парсинга JSON: {e}")
 
-    # 2. Если не получилось – ищем по тексту в блоках с именами
-    if len(names) < 2:
-        name_candidates = soup.select("div.c-fighter-bio__name, span.c-fighter__name, div.c-fighter-compare__name, h1.c-fighter__name")
-        for el in name_candidates:
-            text = el.get_text(strip=True)
-            if text and text not in names:
-                names.append(text)
-
-    # 3. Заглушка
+    # Если JSON не сработал – заглушки
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
-
-    # --- Фотографии бойцов (несколько вариантов) ---
-    photos = []
-    # Ищем в любых img с классом, содержащим "fighter"
-    for img in soup.select("img[class*='fighter']"):
-        src = img.get("src")
-        if src:
-            if src.startswith("/"):
-                src = "https://www.ufc.com" + src
-            if src not in photos:
-                photos.append(src)
-    # Если не нашли, пробуем найти все картинки внутри блоков fighter
-    if len(photos) < 2:
-        for container in soup.select("[class*='fighter']"):
-            for img in container.find_all("img", src=True):
-                src = img["src"]
-                if src.startswith("/"):
-                    src = "https://www.ufc.com" + src
-                if src not in photos:
-                    photos.append(src)
     while len(photos) < 2:
         photos.append(None)
-
-    print(f"Имена: {names}")
-    print(f"Фото: {photos}")
 
     # --- Статистика по раундам ---
     containers = soup.find_all("div", class_="c-stat-group__container")
@@ -181,19 +157,20 @@ def generate_image(data):
     photos = data["photos"]
     rounds = data["rounds"]
 
-    BG = (25, 28, 40)
+    BG = (20, 22, 35)
     TEXT = (220, 220, 220)
-    RED = (230, 60, 60)
-    BLUE = (60, 120, 230)
+    RED = (225, 65, 65)
+    BLUE = (65, 125, 225)
     GOLD = (255, 210, 50)
 
     try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
-        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
         font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
     except:
         font_title = font_name = font_metric = ImageFont.load_default()
 
+    # Загрузка фото
     def load_photo(url):
         if not url:
             return None
@@ -201,10 +178,10 @@ def generate_image(data):
             r = requests.get(url, timeout=8)
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                img.thumbnail((72, 72), Image.LANCZOS)
+                img = img.resize((80, 80))
                 # Круглая маска
-                mask = Image.new("L", (72, 72), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+                mask = Image.new("L", (80, 80), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, 80, 80), fill=255)
                 img.putalpha(mask)
                 return img
         except:
@@ -220,29 +197,31 @@ def generate_image(data):
         vals = [v for rd in rounds for v in rd.get(m, (0,0))]
         max_vals[m] = max(vals) if vals else 1
 
-    img_w = 750
+    # Размеры
+    img_w = 700
     header_h = 110
     metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
-    row_h = 30
+    row_h = 32
     num_metrics = len(metrics)
     num_rounds = len(rounds)
-    img_h = header_h + num_rounds * (num_metrics * (row_h + 8) + 20) + 60
+    img_h = header_h + num_rounds * (num_metrics * (row_h + 8) + 25) + 50
 
     img = Image.new("RGB", (img_w, img_h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Шапка с именами и фото
+    # Шапка: фото и имена
     y = 20
     if photo1:
         img.paste(photo1, (25, y), photo1)
-    draw.text((105, y+25), names[0], fill=RED, font=font_name)
+    draw.text((115, y + 28), names[0], fill=RED, font=font_name)
     if photo2:
-        img.paste(photo2, (img_w-97, y), photo2)
+        img.paste(photo2, (img_w - 105, y), photo2)
+    # Выравнивание второго имени по правому краю
     name2_w = draw.textlength(names[1], font=font_name)
-    draw.text((img_w-105-name2_w, y+25), names[1], fill=BLUE, font=font_name)
+    draw.text((img_w - 115 - name2_w, y + 28), names[1], fill=BLUE, font=font_name)
 
     # Разделительная линия
-    draw.line([(20, y+80), (img_w-20, y+80)], fill=(100, 100, 130), width=2)
+    draw.line([(20, y + 85), (img_w - 20, y + 85)], fill=(100, 100, 130), width=2)
     y = header_h
 
     center_x = img_w // 2
@@ -254,27 +233,26 @@ def generate_image(data):
         for m in metrics:
             f1, f2 = rd.get(m, (0,0))
             max_m = max_vals[m] if max_vals[m] > 0 else 1
-            bar_max = 160
+            bar_max = 150
 
             w1 = int((f1 / max_m) * bar_max) if f1 > 0 else 0
             w2 = int((f2 / max_m) * bar_max) if f2 > 0 else 0
 
-            # Название метрики текстом (без эмодзи)
-            metric_text = m
-            text_w = draw.textlength(metric_text, font=font_metric)
-            draw.text((center_x - text_w//2, y + 6), metric_text, fill=TEXT, font=font_metric)
+            # Название метрики (по центру)
+            text_w = draw.textlength(m, font=font_metric)
+            draw.text((center_x - text_w//2, y + 7), m, fill=TEXT, font=font_metric)
 
-            # Красная шкала (влево)
+            # Красная шкала (влево от центра)
             red_left = center_x - w1 - 5
-            draw.rectangle([(red_left, y + 4), (center_x - 5, y + 16)], fill=RED)
-            draw.text((red_left - 28, y + 4), str(f1), fill=RED, font=font_metric)
+            draw.rectangle([(red_left, y + 5), (center_x - 5, y + 17)], fill=RED)
+            draw.text((red_left - 30, y + 5), str(f1), fill=RED, font=font_metric)
 
-            # Синяя шкала (вправо)
+            # Синяя шкала (вправо от центра)
             blue_right = center_x + 5 + w2
-            draw.rectangle([(center_x + 5, y + 20), (blue_right, y + 32)], fill=BLUE)
-            draw.text((blue_right + 5, y + 20), str(f2), fill=BLUE, font=font_metric)
+            draw.rectangle([(center_x + 5, y + 21), (blue_right, y + 33)], fill=BLUE)
+            draw.text((blue_right + 5, y + 21), str(f2), fill=BLUE, font=font_metric)
 
-            y += row_h + 8
+            y += row_h + 6
         y += 15
 
     # Статус
@@ -284,7 +262,7 @@ def generate_image(data):
     else:
         status = "LIVE"
         color = RED
-    draw.text((30, y+10), status, fill=color, font=font_title)
+    draw.text((30, y + 10), status, fill=color, font=font_title)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
