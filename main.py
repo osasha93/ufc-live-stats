@@ -144,16 +144,16 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Обход вкладок и панелей (только раунды) ---
+    # --- Только реальные раунды ---
     tab_buttons = soup.select("button.c-tabs__nav-btn")
     round_data = []
 
     for btn in tab_buttons:
         round_title = btn.get_text(strip=True)
-        if round_title == "Full Fight":
-            continue   # пропускаем Full Fight
+        # Обрабатываем только кнопки, начинающиеся с "Round"
+        if not round_title.startswith("Round"):
+            continue
 
-        # Ищем id панели из aria-controls
         panel_id = btn.get("aria-controls")
         if not panel_id:
             continue
@@ -177,6 +177,12 @@ def get_fight_stats(event_id, fight_id):
         takedowns = parse_metric_from_element(takedowns_el) if takedowns_el else ((0,0,""),(0,0,""))
         sig_s = parse_metric_from_element(sig_strikes_el) if sig_strikes_el else ((0,0,""),(0,0,""))
         knockdowns = parse_metric_from_element(knockdowns_el) if knockdowns_el else ((0,0,""),(0,0,""))
+
+        # Проверяем, что хотя бы одна метрика имеет ненулевые значения
+        all_values = [total_s[0][0], total_s[1][0], sig_s[0][0], sig_s[1][0],
+                      takedowns[0][0], takedowns[1][0], knockdowns[0][0], knockdowns[1][0]]
+        if sum(all_values) == 0:
+            continue   # пропускаем пустые раунды
 
         round_data.append({
             "title": round_title,
