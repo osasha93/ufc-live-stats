@@ -66,28 +66,9 @@ def get_event_data():
     fight_ids.reverse()
     print(f"Найдено боёв: {len(fight_ids)}, ID: {fight_ids}")
 
-    first_fight_id = fight_ids[0]
-    test_url = f"https://www.ufc.com/matchup/0/{first_fight_id}/post"
-    print(f"Пытаемся определить event_id через редирект: {test_url}")
-
-    try:
-        r = requests.get(test_url, headers=headers, allow_redirects=True, timeout=10)
-        final_url = r.url
-        print(f"Конечный URL после редиректа: {final_url}")
-        match = re.search(r"/matchup/(\d+)/\d+", final_url)
-        if match:
-            event_id = int(match.group(1))
-            print(f"Event ID определён: {event_id}")
-            return event_id, fight_ids
-        else:
-            print("Не удалось извлечь event_id из URL после редиректа")
-    except Exception as e:
-        print(f"Ошибка при редиректе: {e}")
-
-    # Запасной вариант: API
+    # Определяем event_id через API события
     slug = EVENT_URL.rstrip("/").split("/")[-1]
     api_url = f"https://www.ufc.com/api/event/{slug}"
-    print(f"Пробуем API: {api_url}")
     api_headers = {
         "User-Agent": headers["User-Agent"],
         "Accept": "application/json, text/plain, */*",
@@ -97,18 +78,23 @@ def get_event_data():
     try:
         api_resp = requests.get(api_url, headers=api_headers, timeout=15)
         print(f"Статус API: {api_resp.status_code}")
-        if api_resp.status_code == 200 and api_resp.text.strip().startswith('{'):
+        if api_resp.status_code == 200 and api_resp.text.strip():
+            # Выводим первые 500 символов для анализа
+            print("Ответ API (первые 500 символов):")
+            print(api_resp.text[:500])
             data = api_resp.json()
-            if "eventId" in data:
-                event_id = data["eventId"]
+            # Ищем eventId, id или id события
+            event_id = data.get("eventId") or data.get("id") or data.get("event_id")
+            if event_id:
                 print(f"Event ID через API: {event_id}")
-                return event_id, fight_ids
+                return int(event_id), fight_ids
             else:
-                print("Ключ 'eventId' не найден в JSON ответе API")
+                print("Ключ eventId/id не найден в JSON. Попробуйте указать EVENT_ID вручную.")
     except Exception as e:
         print(f"Ошибка API: {e}")
 
-    raise Exception("Не удалось определить Event ID автоматически. Попробуйте позже или укажите EVENT_ID вручную.")
+    # Если API не помог – просим ручной ввод
+    raise Exception("Не удалось определить Event ID автоматически. Укажите EVENT_ID в секретах GitHub (например, 1313).")
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
