@@ -13,7 +13,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
 EVENT_ID = int(os.environ["EVENT_ID"])
-FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]
+FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]   # "12827,12761,..."
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -40,25 +40,34 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Извлечение данных ----------
+# ---------- Вспомогательные функции ----------
 def get_event_data():
     fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
     return EVENT_ID, fight_ids
 
-def extract_metric_value(text, metric_name):
-    """Извлекает пару чисел для метрики из строки типа '48(69%)Total Strikes65(56%)'"""
-    pattern = re.compile(r'(\d+)\s*\(\d+%\)\s*' + re.escape(metric_name) + r'\s*(\d+)\s*\(\d+%\)')
-    match = pattern.search(text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    # Запасной вариант: ищем просто два числа перед и после названия
-    parts = text.split(metric_name)
-    if len(parts) == 2:
-        nums1 = re.findall(r'\d+', parts[0])
-        nums2 = re.findall(r'\d+', parts[1])
-        if nums1 and nums2:
-            return int(nums1[-1]), int(nums2[0])  # последнее число до, первое после
-    return None, None
+def extract_metric_value(container, metric_name):
+    """Извлекает пару чисел для метрики из контейнера раунда"""
+    # Ищем блок с классом, соответствующим метрике (например, 'total_strikes')
+    metric_class = {
+        "Total Strikes": "total_strikes",
+        "Takedowns": "takedowns",
+        "Sig. Strikes": "sig_strikes",
+        "Knockdowns": "knockdowns"
+    }.get(metric_name)
+    if not metric_class:
+        return 0, 0
+    block = container.find("div", class_=re.compile(f"c-stat-metric-compare.*{metric_class}"))
+    if not block:
+        return 0, 0
+    # Ищем цифры внутри блока metric
+    metric_div = block.find("div", class_="c-stat-metric-compare__metric")
+    if not metric_div:
+        return 0, 0
+    text = metric_div.get_text(strip=True)
+    numbers = re.findall(r'\d+', text)
+    if len(numbers) >= 2:
+        return int(numbers[0]), int(numbers[1])
+    return 0, 0
 
 def get_fight_stats(event_id, fight_id):
     url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post?t={int(time.time())}"
@@ -76,73 +85,71 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # Имена бойцов
+    # --- Имена бойцов ---
     names = []
-    name_blocks = soup.find_all("div", class_=re.compile("c-fighter-compare__name"))
+    # Способ 1: c-fighter-bio__name
+    name_blocks = soup.find_all("div", class_="c-fighter-bio__name")
     if not name_blocks:
         name_blocks = soup.find_all("span", class_=re.compile("c-fighter__name"))
     for block in name_blocks:
         text = block.get_text(strip=True)
         if text:
             names.append(text)
+    # Если не нашли, пробуем заголовок
     if len(names) < 2:
-        title = soup.find("title")
-        if title:
-            parts = title.get_text().split(" vs ")
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text()
+            parts = title.split(" vs ")
             if len(parts) == 2:
                 names = [parts[0].strip(), parts[1].strip()]
+    # Заглушка
     if len(names) < 2:
         names = ["Red Corner", "Blue Corner"]
 
-    # Фото бойцов
+    # --- Фотографии бойцов ---
     photos = []
-    photo_containers = soup.find_all("div", class_=re.compile("c-fighter-compare__image"))
+    # Ищем контейнеры с классом, содержащим 'fighter' и 'image'
+    photo_containers = soup.find_all("div", class_=re.compile("c-fighter.*image"))
     if not photo_containers:
-        photo_containers = soup.find_all("div", class_=re.compile("c-fighter__image"))
-    for container in photo_containers:
-        img = container.find("img")
+        photo_containers = soup.find_all("div", class_="c-fighter-compare__image")
+    for cont in photo_containers:
+        img = cont.find("img")
         if img and img.get("src"):
             src = img["src"]
             if src.startswith("/"):
                 src = "https://www.ufc.com" + src
             photos.append(src)
+    # Дополняем до двух (если не хватает)
     while len(photos) < 2:
         photos.append(None)
 
-    # Контейнеры раундов
+    # --- Статистика по раундам ---
     containers = soup.find_all("div", class_="c-stat-group__container")
-    round_data = []   # список словарей: { 'title': 'Round 1', 'Total Strikes': (f1,f2), ... }
-
+    round_data = []
     for cont in containers:
-        # Определяем заголовок (Round 1, Full Fight, и т.д.)
+        # Ищем заголовок
         label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__label"))
         if not label:
             label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__title"))
         title = label.get_text(strip=True) if label else ""
         if not title:
-            # Если заголовка нет, но контейнер первый — возможно, это full fight
             if not round_data:
                 title = "Full Fight"
             else:
-                continue  # пропускаем неизвестные
+                continue
 
-        # Ищем метрики внутри этого контейнера
-        metrics_block = cont.find("div", class_="c-stat-metric-compare-group")
-        if not metrics_block:
-            continue
-        # Собираем текст всех метрик в одну строку (для упрощения)
-        all_text = metrics_block.get_text(separator=" ", strip=True)
-        # Извлекаем четыре нужные метрики
-        total_strikes = extract_metric_value(all_text, "Total Strikes")
-        takedowns = extract_metric_value(all_text, "Takedowns")
-        sig_strikes = extract_metric_value(all_text, "Sig. Strikes")
-        knockdowns = extract_metric_value(all_text, "Knockdowns")
+        # Извлекаем четыре метрики
+        total_s = extract_metric_value(cont, "Total Strikes")
+        takedowns = extract_metric_value(cont, "Takedowns")
+        sig_s = extract_metric_value(cont, "Sig. Strikes")
+        knockdowns = extract_metric_value(cont, "Knockdowns")
 
         round_data.append({
             "title": title,
-            "Total Strikes": total_strikes,
+            "Total Strikes": total_s,
             "Takedowns": takedowns,
-            "Sig. Strikes": sig_strikes,
+            "Sig. Strikes": sig_s,
             "Knockdowns": knockdowns
         })
 
@@ -157,42 +164,41 @@ def get_fight_stats(event_id, fight_id):
         "finished": finished
     }
 
-# ---------- Генерация картинки (улучшенная) ----------
+# ---------- Генерация картинки (современный дизайн) ----------
 def generate_image(data):
     names = data["names"]
     photos = data["photos"]
     rounds = data["rounds"]
 
-    # Рассчитаем размеры
-    bar_width = 140
-    row_height = 20
-    header_height = 80
-    round_spacing = 20
-    metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
-    num_metrics = len(metrics)
-    num_rounds = len(rounds)
+    # Цветовая схема
+    BG_COLOR = (20, 20, 30)         # тёмно-синий фон
+    TEXT_COLOR = (255, 255, 255)
+    RED_BAR = (220, 50, 50)
+    BLUE_BAR = (50, 130, 220)
+    GOLD = (255, 215, 0)
 
-    img_width = 600
-    img_height = header_height + num_rounds * (num_metrics * (row_height + 2) + 30) + 50
-
-    img = Image.new("RGB", (img_width, img_height), "white")
-    draw = ImageDraw.Draw(img)
-
+    # Шрифты (используем стандартные, но можно загрузить кастомный)
     try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
-        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
     except:
-        font_title = font_name = font_small = ImageFont.load_default()
+        font_large = font_name = font_small = ImageFont.load_default()
 
-    # Верхний блок: фото и имена
+    # Загружаем фото бойцов
     def load_photo(url):
         if not url:
             return None
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, timeout=8)
             if r.status_code == 200:
-                return Image.open(io.BytesIO(r.content)).resize((60, 60))
+                img = Image.open(io.BytesIO(r.content)).resize((70, 70))
+                # Делаем круглую маску (опционально)
+                mask = Image.new("L", (70, 70), 0)
+                draw_mask = ImageDraw.Draw(mask)
+                draw_mask.ellipse((0, 0, 70, 70), fill=255)
+                img.putalpha(mask)
+                return img
         except:
             pass
         return None
@@ -200,60 +206,79 @@ def generate_image(data):
     photo1 = load_photo(photos[0])
     photo2 = load_photo(photos[1])
 
+    # Определяем максимальные значения для шкал (по каждой метрике отдельно)
+    max_vals = {}
+    for metric in ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]:
+        vals = []
+        for rd in rounds:
+            v1, v2 = rd.get(metric, (0, 0))
+            vals.extend([v1, v2])
+        max_vals[metric] = max(vals) if vals else 1
+
+    # Размеры картинки
+    img_width = 700
+    row_height = 30
+    header_height = 110
+    round_spacing = 15
+    metrics_count = 4
+    num_rounds = len(rounds)
+    img_height = header_height + num_rounds * (metrics_count * (row_height + 6) + 25) + 50
+
+    img = Image.new("RGB", (img_width, img_height), BG_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    # --- Шапка с именами и фото ---
+    y = 20
     if photo1:
-        img.paste(photo1, (20, 20))
-    draw.text((90, 30), names[0], fill="red", font=font_name)
-
+        img.paste(photo1, (30, y), photo1)
+    draw.text((110, y + 20), names[0], fill=RED_BAR, font=font_name)
     if photo2:
-        img.paste(photo2, (img_width - 80, 20))
-    # Выравнивание имени второго бойца по правому краю
-    name2_width = draw.textlength(names[1], font=font_name)
-    draw.text((img_width - 90 - name2_width, 30), names[1], fill="blue", font=font_name)
+        img.paste(photo2, (img_width - 100, y), photo2)
+    name2_w = draw.textlength(names[1], font=font_name)
+    draw.text((img_width - 110 - name2_w, y + 20), names[1], fill=BLUE_BAR, font=font_name)
 
-    y = 100
-    # Для каждого раунда рисуем блок
+    # Разделительная линия
+    draw.line([(20, y + 80), (img_width - 20, y + 80)], fill=(80, 80, 100), width=2)
+    y = 110
+
+    # --- Статистика по раундам ---
     for rd in rounds:
         title = rd["title"]
-        draw.text((20, y), title, fill="black", font=font_title)
-        y += 25
-        for metric in metrics:
+        draw.text((30, y), title, fill=GOLD, font=font_large)
+        y += 35
+        for metric in ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]:
             f1_val, f2_val = rd.get(metric, (0, 0))
-            if f1_val is None:
-                f1_val, f2_val = 0, 0
-            # Нормализуем длину шкалы по максимальному значению во всех раундах (для этой метрики?)
-            # Чтобы шкалы были наглядны, найдём максимум для этой метрики по всем раундам
-            max_val = 1
-            for r in rounds:
-                v1, v2 = r.get(metric, (0, 0))
-                if v1 is not None:
-                    max_val = max(max_val, v1, v2)
-            w1 = int((f1_val / max_val) * bar_width)
-            w2 = int((f2_val / max_val) * bar_width)
+            max_val = max_vals[metric] if max_vals[metric] > 0 else 1
+            bar_max = 180
+            w1 = int((f1_val / max_val) * bar_max)
+            w2 = int((f2_val / max_val) * bar_max)
 
-            draw.text((20, y+2), metric, fill="black", font=font_small)
-            # Красная шкала
-            draw.rectangle([(150, y+2), (150 + w1, y+18)], fill="red")
-            draw.text((155, y+3), str(f1_val), fill="white", font=font_small)
-            # Синяя шкала
-            draw.rectangle([(150, y+22), (150 + w2, y+38)], fill="blue")
-            draw.text((155, y+23), str(f2_val), fill="white", font=font_small)
-            y += 45
-        y += 15  # дополнительный отступ между раундами
+            # Название метрики
+            draw.text((40, y + 4), metric, fill=TEXT_COLOR, font=font_small)
+            # Шкала красного
+            draw.rectangle([(170, y + 2), (170 + w1, y + 14)], fill=RED_BAR)
+            draw.text((175 + w1, y + 1), str(f1_val), fill=TEXT_COLOR, font=font_small)
+            # Шкала синего
+            draw.rectangle([(170, y + 18), (170 + w2, y + 30)], fill=BLUE_BAR)
+            draw.text((175 + w2, y + 17), str(f2_val), fill=TEXT_COLOR, font=font_small)
+            y += 36
+        y += 10  # промежуток между раундами
 
-    # Статус
+    # Статус боя
     if data.get("finished"):
-        draw.text((20, y+10), "Fight finished", fill="green", font=font_title)
-    elif data.get("not_started"):
-        draw.text((20, y+10), "Not started yet", fill="orange", font=font_title)
+        status = "✓ Fight Finished"
+        color = (50, 200, 50)
     else:
-        draw.text((20, y+10), "LIVE", fill="red", font=font_title)
+        status = "● LIVE"
+        color = RED_BAR
+    draw.text((30, y + 10), status, fill=color, font=font_large)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
-# ---------- Основная логика (без изменений) ----------
+# ---------- Основная логика ----------
 def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
