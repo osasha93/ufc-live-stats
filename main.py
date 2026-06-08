@@ -12,8 +12,11 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-EVENT_ID = int(os.environ["EVENT_ID"])
-FIGHT_IDS_RAW = os.environ["FIGHT_IDS"]   # "12827,12761,..."
+# Автоматический режим (приоритет)
+EVENT_URL = os.environ.get("EVENT_URL", "")
+# Ручной режим (если EVENT_URL не задан)
+MANUAL_EVENT_ID = os.environ.get("EVENT_ID", "")
+MANUAL_FIGHT_IDS = os.environ.get("FIGHT_IDS", "")
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -40,11 +43,63 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Извлечение данных ----------
-def get_event_data():
-    fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
-    return EVENT_ID, fight_ids
+# ---------- Автоматическое получение event_id и fight_ids ----------
+def fetch_event_data_from_url(event_url):
+    """Парсит страницу события и возвращает event_id и список fight_ids (от первого боя к главному)."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(event_url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
 
+    # 1. Ищем fight_id в карточках (порядок в DOM: от главного к первому, поэтому переворачиваем)
+    cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
+    fight_ids = [int(card["data-fmid"]) for card in cards]
+    if not fight_ids:
+        raise Exception("Не найдены ID боёв на странице события")
+    fight_ids.reverse()  # теперь первый бой -> главный
+
+    # 2. Пытаемся получить event_id через API
+    slug = event_url.rstrip("/").split("/")[-1]
+    api_url = f"https://www.ufc.com/api/event/{slug}"
+    api_headers = {
+        "User-Agent": headers["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Referer": event_url,
+        "X-Requested-With": "XMLHttpRequest"
+    }
+    try:
+        api_resp = requests.get(api_url, headers=api_headers, timeout=15)
+        if api_resp.status_code == 200 and api_resp.text.strip().startswith('{'):
+            data = api_resp.json()
+            if "eventId" in data:
+                return data["eventId"], fight_ids
+    except:
+        pass
+
+    # 3. Ищем eventId в JavaScript на странице события
+    scripts = soup.find_all("script")
+    for script in scripts:
+        if script.string and "eventId" in script.string:
+            match = re.search(r'"eventId"\s*:\s*"?(\d+)"?', script.string)
+            if match:
+                return int(match.group(1)), fight_ids
+
+    raise Exception("Не удалось определить Event ID автоматически. Укажите EVENT_ID и FIGHT_IDS вручную.")
+
+def get_event_data():
+    # Если задан EVENT_URL, используем автоматический режим
+    if EVENT_URL:
+        print(f"Автоматический режим: парсим {EVENT_URL}")
+        return fetch_event_data_from_url(EVENT_URL)
+
+    # Ручной режим (когда нет EVENT_URL)
+    if MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
+        fight_ids = [int(f.strip()) for f in MANUAL_FIGHT_IDS.split(",") if f.strip()]
+        return int(MANUAL_EVENT_ID), fight_ids
+
+    raise Exception("Не заданы ни EVENT_URL, ни EVENT_ID/FIGHT_IDS. Бот не знает, что отслеживать.")
+
+# ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
     """Извлекает (value, percent, attempts_str) для красного и синего углов."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
@@ -77,6 +132,7 @@ def parse_metric_from_element(metric_el):
 
     return (v1, p1, a1_text), (v2, p2, a2_text)
 
+# ---------- Статистика боя ----------
 def get_fight_stats(event_id, fight_id):
     url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post?t={int(time.time())}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -113,9 +169,9 @@ def get_fight_stats(event_id, fight_id):
         except:
             pass
 
-    # --- Имена и фото из JSON ---
+    # --- Имена и фото (с запасным URL) ---
     names = []
-    photos = []
+    photos = []   # список кортежей (основной_url, запасной_url)
     try:
         json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
         if json_script and json_script.string:
@@ -128,17 +184,19 @@ def get_fight_stats(event_id, fight_id):
                     full_name = f"{given} {family}".strip() or "Unknown"
                     names.append(full_name)
                     img_url = athlete.get("img", "")
-                    if img_url and img_url.startswith("http"):
-                        photos.append(img_url)
-                    else:
-                        photos.append(None)
+                    img_sml = athlete.get("img_sml_screens", "")
+                    if not img_url.startswith("http"):
+                        img_url = ""
+                    if not img_sml.startswith("http"):
+                        img_sml = ""
+                    photos.append((img_url, img_sml))
     except:
         pass
 
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
     while len(photos) < 2:
-        photos.append(None)
+        photos.append(("", ""))
 
     # Статус завершения
     body_text = soup.get_text()
@@ -150,7 +208,6 @@ def get_fight_stats(event_id, fight_id):
 
     for btn in tab_buttons:
         round_title = btn.get_text(strip=True)
-        # Обрабатываем только кнопки, начинающиеся с "Round"
         if not round_title.startswith("Round"):
             continue
 
@@ -178,11 +235,10 @@ def get_fight_stats(event_id, fight_id):
         sig_s = parse_metric_from_element(sig_strikes_el) if sig_strikes_el else ((0,0,""),(0,0,""))
         knockdowns = parse_metric_from_element(knockdowns_el) if knockdowns_el else ((0,0,""),(0,0,""))
 
-        # Проверяем, что хотя бы одна метрика имеет ненулевые значения
         all_values = [total_s[0][0], total_s[1][0], sig_s[0][0], sig_s[1][0],
                       takedowns[0][0], takedowns[1][0], knockdowns[0][0], knockdowns[1][0]]
         if sum(all_values) == 0:
-            continue   # пропускаем пустые раунды
+            continue
 
         round_data.append({
             "title": round_title,
@@ -227,25 +283,28 @@ def generate_image(data):
     except:
         font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
 
-    def load_photo(url):
-        if not url:
+    def load_photo(primary_url, fallback_url=None):
+        if not primary_url:
             return None
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Referer": "https://www.ufc.com/",
-            "Accept": "image/webp,image/png,image/*,*/*;q=0.8"
+            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
         }
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                img.thumbnail((72, 72), Image.LANCZOS)
-                mask = Image.new("L", (72, 72), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
-                img.putalpha(mask)
-                return img
-        except:
-            pass
+        for url in (primary_url, fallback_url):
+            if not url:
+                continue
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                    img.thumbnail((72, 72), Image.LANCZOS)
+                    mask = Image.new("L", (72, 72), 0)
+                    ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+                    img.putalpha(mask)
+                    return img
+            except:
+                continue
         return None
 
     def draw_initials(draw, xy, name, color):
@@ -257,13 +316,12 @@ def generate_image(data):
         w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
         draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
 
-    photo1 = load_photo(photos[0])
-    photo2 = load_photo(photos[1])
+    photo1 = load_photo(photos[0][0], photos[0][1])
+    photo2 = load_photo(photos[1][0], photos[1][1])
 
     name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
     name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
 
-    # Нормировка шкал
     max_vals = {}
     for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
         vals = []
@@ -316,7 +374,6 @@ def generate_image(data):
             draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
 
             bar_y = y + 18
-            # Красная шкала (влево)
             red_left = center_x - w1 - 5
             draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
             if m == "Takedowns" and a1_text:
@@ -326,7 +383,6 @@ def generate_image(data):
             rtext_w = draw.textlength(red_text, font=font_number)
             draw.text((red_left - 5 - rtext_w, bar_y - 2), red_text, fill=RED, font=font_number)
 
-            # Синяя шкала (вправо)
             blue_right = center_x + 5 + w2
             draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
             if m == "Takedowns" and a2_text:
@@ -366,6 +422,7 @@ def main():
         }
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
+        print(f"Автоматически получены event_id={event_id}, бои: {fight_ids}")
 
     if state.get("finished_all"):
         print("Все бои турнира завершены.")
