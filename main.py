@@ -102,7 +102,6 @@ def get_fight_stats(event_id, fight_id):
     except Exception as e:
         print(f"Ошибка парсинга JSON: {e}")
 
-    # Если JSON не сработал – заглушки
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
     while len(photos) < 2:
@@ -157,7 +156,7 @@ def generate_image(data):
     photos = data["photos"]
     rounds = data["rounds"]
 
-    BG = (20, 22, 35)
+    BG = (18, 22, 35)
     TEXT = (220, 220, 220)
     RED = (225, 65, 65)
     BLUE = (65, 125, 225)
@@ -166,11 +165,12 @@ def generate_image(data):
     try:
         font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
         font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-        font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+        font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+        font_number = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
     except:
-        font_title = font_name = font_metric = ImageFont.load_default()
+        font_title = font_name = font_metric = font_number = ImageFont.load_default()
 
-    # Загрузка фото
+    # Загрузка фото с сохранением пропорций
     def load_photo(url):
         if not url:
             return None
@@ -178,7 +178,8 @@ def generate_image(data):
             r = requests.get(url, timeout=8)
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                img = img.resize((80, 80))
+                # Ресайз с сохранением пропорций, чтобы вписаться в 80x80
+                img.thumbnail((80, 80), Image.LANCZOS)
                 # Круглая маска
                 mask = Image.new("L", (80, 80), 0)
                 ImageDraw.Draw(mask).ellipse((0, 0, 80, 80), fill=255)
@@ -201,10 +202,10 @@ def generate_image(data):
     img_w = 700
     header_h = 110
     metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
-    row_h = 32
+    row_h = 38      # высота строки метрики (шкалы + подписи)
     num_metrics = len(metrics)
     num_rounds = len(rounds)
-    img_h = header_h + num_rounds * (num_metrics * (row_h + 8) + 25) + 50
+    img_h = header_h + num_rounds * (num_metrics * row_h + 30) + 50
 
     img = Image.new("RGB", (img_w, img_h), BG)
     draw = ImageDraw.Draw(img)
@@ -216,11 +217,10 @@ def generate_image(data):
     draw.text((115, y + 28), names[0], fill=RED, font=font_name)
     if photo2:
         img.paste(photo2, (img_w - 105, y), photo2)
-    # Выравнивание второго имени по правому краю
     name2_w = draw.textlength(names[1], font=font_name)
     draw.text((img_w - 115 - name2_w, y + 28), names[1], fill=BLUE, font=font_name)
 
-    # Разделительная линия
+    # Линия
     draw.line([(20, y + 85), (img_w - 20, y + 85)], fill=(100, 100, 130), width=2)
     y = header_h
 
@@ -238,22 +238,28 @@ def generate_image(data):
             w1 = int((f1 / max_m) * bar_max) if f1 > 0 else 0
             w2 = int((f2 / max_m) * bar_max) if f2 > 0 else 0
 
-            # Название метрики (по центру)
-            text_w = draw.textlength(m, font=font_metric)
-            draw.text((center_x - text_w//2, y + 7), m, fill=TEXT, font=font_metric)
+            # Название метрики (по центру над шкалами)
+            metric_text = m
+            text_w = draw.textlength(metric_text, font=font_metric)
+            draw.text((center_x - text_w//2, y), metric_text, fill=TEXT, font=font_metric)
+
+            # Шкалы на одном уровне (y+16)
+            bar_y = y + 18
 
             # Красная шкала (влево от центра)
             red_left = center_x - w1 - 5
-            draw.rectangle([(red_left, y + 5), (center_x - 5, y + 17)], fill=RED)
-            draw.text((red_left - 30, y + 5), str(f1), fill=RED, font=font_metric)
+            draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
+            # Число красного бойца (слева от шкалы)
+            draw.text((red_left - 25, bar_y - 2), str(f1), fill=RED, font=font_number)
 
             # Синяя шкала (вправо от центра)
             blue_right = center_x + 5 + w2
-            draw.rectangle([(center_x + 5, y + 21), (blue_right, y + 33)], fill=BLUE)
-            draw.text((blue_right + 5, y + 21), str(f2), fill=BLUE, font=font_metric)
+            draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
+            # Число синего бойца (справа от шкалы)
+            draw.text((blue_right + 5, bar_y - 2), str(f2), fill=BLUE, font=font_number)
 
-            y += row_h + 6
-        y += 15
+            y += row_h   # следующая метрика
+        y += 10  # отступ между раундами
 
     # Статус
     if data.get("finished"):
