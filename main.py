@@ -44,15 +44,14 @@ def edit_message_media(message_id, photo_bytes, caption=""):
 def get_event_data():
     fight_ids = [int(f.strip()) for f in FIGHT_IDS_RAW.split(",") if f.strip()]
     return EVENT_ID, fight_ids
-    
+
 def parse_metric_from_element(metric_el):
+    """Извлекает (value, percent) для красного и синего."""
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
     blue_num = metric_el.find("span", class_="c-stat-metric-compare__value_2 c-stat-metric-compare__number")
     blue_pct = metric_el.find("span", class_="c-stat-metric-compare__percent_2")
 
-    # Извлекаем цифры из текста
-    import re
     def extract_int(span):
         if span:
             digits = re.sub(r'\D', '', span.get_text(strip=True))
@@ -77,30 +76,16 @@ def get_fight_stats(event_id, fight_id):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # --- Победитель из HTML ---
+    # --- Победитель из HTML (div с классом fighter-names__winner--show) ---
     winner_idx = -1
     fighter_img_div = soup.find("div", class_="fighter-img")
     if fighter_img_div:
-        left_winner = fighter_img_div.find("a", class_="left")
-        right_winner = fighter_img_div.find("a", class_="right")
-        if left_winner and left_winner.find("div", class_=re.compile("fighter-names__winner--show")):
-            winner_idx = 0  # red corner
-        elif right_winner and right_winner.find("div", class_=re.compile("fighter-names__winner--show")):
-            winner_idx = 1  # blue corner
-
-    # Если не нашли в HTML, попробуем JSON
-    if winner_idx == -1:
-        try:
-            json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
-            if json_script and json_script.string:
-                data = json.loads(json_script.string)
-                athletes = data.get("matchup", {}).get("athletes", [])
-                for i, athlete in enumerate(athletes[:2]):
-                    if athlete.get("outcome") is True:
-                        winner_idx = i
-                        break
-        except:
-            pass
+        left_link = fighter_img_div.find("a", class_="left")
+        right_link = fighter_img_div.find("a", class_="right")
+        if left_link and left_link.find("div", class_=re.compile("fighter-names__winner--show")):
+            winner_idx = 0
+        elif right_link and right_link.find("div", class_=re.compile("fighter-names__winner--show")):
+            winner_idx = 1
 
     # --- Имена и фото из JSON (если есть) ---
     names = []
@@ -121,10 +106,10 @@ def get_fight_stats(event_id, fight_id):
                         photos.append(img_url)
                     else:
                         photos.append(None)
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка JSON: {e}")
 
-    # Заглушки, если JSON не дал имён
+    # Заглушки
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
     while len(photos) < 2:
@@ -134,7 +119,7 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # --- Статистика по раундам ---
+    # --- Статистика только по раундам (без Full Fight) ---
     containers = soup.find_all("div", class_="c-stat-group__container")
     round_data = []
     for cont in containers:
@@ -142,17 +127,19 @@ def get_fight_stats(event_id, fight_id):
         if not label:
             label = cont.find(["div", "span"], class_=re.compile(r"c-stat-group__title"))
         title = label.get_text(strip=True) if label else ""
-        if not title:
-            if not round_data:
-                title = "Full Fight"
-            else:
-                continue
 
-        # Извлекаем каждую метрику по её классу
+        # Пропускаем Full Fight и пустые заголовки
+        if not title or title.lower() == "full fight":
+            continue
+
+        # Оставляем только раунды (Round 1, Round 2, ...)
+        if not title.startswith("Round"):
+            continue
+
         metrics_block = cont.find("div", class_="c-stat-metric-compare-group")
         if not metrics_block:
             continue
-        # Находим элементы каждой метрики
+
         total_strikes_el = metrics_block.find("div", class_="total_strikes")
         takedowns_el = metrics_block.find("div", class_="takedowns")
         sig_strikes_el = metrics_block.find("div", class_="sig_strikes")
@@ -172,6 +159,7 @@ def get_fight_stats(event_id, fight_id):
         })
 
     if not round_data:
+        # Если нет раундов (например, бой ещё не начался), возвращаем пустые данные
         return {"not_started": True, "names": names, "photos": photos, "winner_idx": winner_idx}
 
     return {
@@ -206,13 +194,16 @@ def generate_image(data):
     except:
         font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
 
+    # Загрузка фото с максимально правдоподобными заголовками
     def load_photo(url):
         if not url:
             return None
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://www.ufc.com/",
-            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.9"
         }
         try:
             r = requests.get(url, headers=headers, timeout=10)
@@ -223,8 +214,8 @@ def generate_image(data):
                 ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
                 img.putalpha(mask)
                 return img
-        except:
-            pass
+        except Exception as e:
+            print(f"Ошибка загрузки фото {url}: {e}")
         return None
 
     def draw_initials(draw, xy, name, color):
@@ -232,23 +223,18 @@ def generate_image(data):
         r = 36
         draw.ellipse([x, y, x+72, y+72], fill=color)
         initials = "".join([n[0].upper() for n in name.split() if n])[:2]
-        # Используем textbbox для центрирования (Pillow >= 8.0)
         bbox = draw.textbbox((0,0), initials, font=font_initials)
         w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
         draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
 
     photo1 = load_photo(photos[0])
     photo2 = load_photo(photos[1])
-    if not photo1:
-        photo1 = None
-    if not photo2:
-        photo2 = None
 
     # Имена с WIN
     name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
     name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
 
-    # Максимальные значения для нормировки шкал
+    # Максимальные значения для шкал
     max_vals = {}
     for m in ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]:
         vals = []
@@ -257,6 +243,7 @@ def generate_image(data):
             vals.extend([v1, v2])
         max_vals[m] = max(vals) if vals else 1
 
+    # Размеры изображения
     img_w = 760
     header_h = 120
     metrics = ["Total Strikes", "Takedowns", "Sig. Strikes", "Knockdowns"]
@@ -304,14 +291,14 @@ def generate_image(data):
             draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
 
             bar_y = y + 18
-            # Красная шкала (влево)
+            # Красная шкала влево
             red_left = center_x - w1 - 5
             draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
             red_text = f"{v1} ({p1}%)" if p1 > 0 else str(v1)
             rtext_w = draw.textlength(red_text, font=font_number)
             draw.text((red_left - 5 - rtext_w, bar_y - 2), red_text, fill=RED, font=font_number)
 
-            # Синяя шкала (вправо)
+            # Синяя шкала вправо
             blue_right = center_x + 5 + w2
             draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
             blue_text = f"{v2} ({p2}%)" if p2 > 0 else str(v2)
