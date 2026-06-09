@@ -7,7 +7,6 @@ import io
 import re
 from PIL import Image, ImageDraw, ImageFont
 
-
 # ---------- Настройки ----------
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -41,7 +40,7 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (исправленный порядок) ----------
+# ---------- Сбор ID боёв (теперь просто отдаёт список без разворота) ----------
 def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
@@ -50,11 +49,8 @@ def fetch_fight_ids(event_url):
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    fight_ids = []
-    for card in cards:
-        fight_ids.append(int(card["data-fmid"]))
-    fight_ids = fight_ids[::-1]   # ← переворот списка
-    return fight_ids
+    fight_ids = [int(card["data-fmid"]) for card in cards]
+    return fight_ids   # порядок: от главного к первому
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
@@ -358,7 +354,7 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    # ВРЕМЕННО: удаляем старый state.json для чистого старта
+    # Временное удаление старого state.json (можно будет убрать после теста)
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
@@ -368,7 +364,9 @@ def main():
     else:
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
+        # Получаем список и сразу переворачиваем
         fight_ids = fetch_fight_ids(EVENT_URL)
+        fight_ids = fight_ids[::-1]   # ← ГЛАВНОЕ: разворачиваем порядок
         state = {
             "event_id": EVENT_ID,
             "fight_ids": fight_ids,
@@ -392,7 +390,6 @@ def main():
         print("Не удалось получить данные боя.")
         return
 
-    # Если бой ещё не начался и сообщения нет – просто выходим (не спамим)
     if data.get("not_started") and not os.path.exists(MSG_ID_FILE):
         print("Бой ещё не начался, ждём.")
         return
