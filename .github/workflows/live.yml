@@ -9,13 +9,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache state
+      - name: Cache state files
         uses: actions/cache@v3
         with:
           path: |
             state.json
             live_message_id.txt
-          key: live-state-${{ runner.os }}
+          key: ufc-live-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ufc-live-${{ runner.os }}-
 
       - name: Setup Python
         uses: actions/setup-python@v4
