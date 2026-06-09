@@ -2,7 +2,7 @@ name: Live Fight Stats
 
 on:
   schedule:
-    - cron: '* * * * 6,0'   # каждую минуту в субботу и воскресенье
+    - cron: '* * * * 6,0'   # каждую минуту в субботу и воскресенье (UTC)
   workflow_dispatch:
 
 jobs:
@@ -10,23 +10,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Cache state
         uses: actions/cache@v3
         with:
           path: |
-            live_msg.txt
+            live_message_id.txt
+            live_state.json
             state.json
           key: live-state-${{ runner.os }}
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
           EVENT_URL: ${{ secrets.EVENT_URL }}
+          EVENT_ID: ${{ secrets.EVENT_ID }}   # ← ВОТ ЭТА СТРОКА ДОБАВЛЕНА
         run: python main.py
