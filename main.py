@@ -40,11 +40,10 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (теперь просто отдаёт список без разворота) ----------
+# ---------- ВРЕМЕННАЯ фиксированная функция (правильный порядок) ----------
 def fetch_fight_ids(event_url):
-    # ВРЕМЕННО: фиксированный правильный порядок (от первого боя к главному)
-    correct_order = [12827, 12761, 12825, 12828, 12760, 12887, 12889, 12888, 12890, 12826, 12822, 12732]
-    return correct_order
+    # ПРАВИЛЬНЫЙ порядок: от первого боя к главному
+    return [12827, 12761, 12825, 12828, 12760, 12887, 12889, 12888, 12890, 12826, 12822, 12732]
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
@@ -348,7 +347,7 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    # Временное удаление старого state.json (можно будет убрать после теста)
+    # Временное удаление старого state.json (уберите после теста)
     if os.path.exists(STATE_FILE):
         os.remove(STATE_FILE)
 
@@ -358,9 +357,8 @@ def main():
     else:
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
-        # Получаем список и сразу переворачиваем
-        fight_ids = fetch_fight_ids(EVENT_URL)
-        fight_ids = fight_ids[::-1]   # ← ГЛАВНОЕ: разворачиваем порядок
+        fight_ids = fetch_fight_ids(EVENT_URL)   # уже в правильном порядке
+        # НЕ ДЕЛАЕМ РАЗВОРОТ, потому что функция возвращает правильный порядок
         state = {
             "event_id": EVENT_ID,
             "fight_ids": fight_ids,
