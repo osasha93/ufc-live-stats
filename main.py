@@ -40,7 +40,7 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (правильный порядок из DOM) ----------
+# ---------- Сбор ID боёв ----------
 def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
@@ -48,8 +48,7 @@ def fetch_fight_ids(event_url):
     soup = BeautifulSoup(resp.text, "html.parser")
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
-        raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    # Порядок в DOM уже от первого боя к главному
+        raise Exception("Бои ещё не добавлены на страницу события.")
     fight_ids = [int(card["data-fmid"]) for card in cards]
     return fight_ids
 
@@ -355,6 +354,15 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
+    # Отладка: смотрим, что лежит в рабочей директории
+    print("Содержимое рабочей директории:")
+    for f in os.listdir('.'):
+        print(" -", f)
+    print(f"STATE_FILE существует: {os.path.exists(STATE_FILE)}")
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            print(f"Содержимое {STATE_FILE}: {f.read()}")
+
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
@@ -418,6 +426,7 @@ def main():
             print(f"Переход к следующему бою ID {state['fight_ids'][state['current_index']]}")
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
+        print(f"Обновлённый {STATE_FILE} сохранён.")
 
 if __name__ == "__main__":
     main()
