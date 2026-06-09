@@ -49,8 +49,19 @@ def fetch_fight_ids(event_url):
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    # Идём по карточкам в обратном порядке, чтобы сразу получить от первого боя к главному
-    fight_ids = [int(card["data-fmid"]) for card in reversed(cards)]
+    
+    # Собираем ID в том порядке, как они идут в DOM (главный → первый)
+    dom_ids = [int(card["data-fmid"]) for card in cards]
+    
+    # Явный ручной разворот: проходим от конца к началу
+    fight_ids = []
+    for i in range(len(dom_ids) - 1, -1, -1):
+        fight_ids.append(dom_ids[i])
+    
+    # Дебаг-вывод, чтобы убедиться в правильности
+    print(f"DEBUG: порядок в DOM (главный → первый): {dom_ids}")
+    print(f"DEBUG: порядок после ручного разворота (первый → главный): {fight_ids}")
+    
     return fight_ids
 
 # ---------- Парсинг метрик ----------
