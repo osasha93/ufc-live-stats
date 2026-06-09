@@ -6,17 +6,15 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download state artifact
-        uses: actions/download-artifact@v4
+      - name: Cache state
+        id: cache
+        uses: actions/cache@v4
         with:
-          name: fight-state
-          path: .
-        continue-on-error: true
+          path: state.json
+          key: ufc-state
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,13 +32,3 @@ jobs:
           EVENT_URL: ${{ secrets.EVENT_URL }}
           EVENT_ID: ${{ secrets.EVENT_ID }}
         run: python main.py
-
-      - name: Upload state artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fight-state
-          path: |
-            current_index.txt
-            fight_ids.json
-            live_message_id.txt
-        if: success()
