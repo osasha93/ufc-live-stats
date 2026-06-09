@@ -15,7 +15,8 @@ THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 EVENT_URL = os.environ.get("EVENT_URL", "")
 EVENT_ID = int(os.environ["EVENT_ID"])
 
-STATE_FILE = "state.json"
+CURRENT_INDEX_FILE = "current_index.txt"
+FIGHT_IDS_FILE = "fight_ids.json"
 MSG_ID_FILE = "live_message_id.txt"
 
 # ---------- Telegram API ----------
@@ -353,33 +354,34 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-        print(f"Кэш найден: current_index={state['current_index']}")
+    # Загружаем индекс из файла (если есть)
+    current_index = 0
+    if os.path.exists(CURRENT_INDEX_FILE):
+        with open(CURRENT_INDEX_FILE, 'r') as f:
+            current_index = int(f.read().strip())
+        print(f"Загружен current_index: {current_index}")
+
+    # Загружаем список боёв (если файла нет – получаем и сохраняем)
+    fight_ids = None
+    if os.path.exists(FIGHT_IDS_FILE):
+        with open(FIGHT_IDS_FILE, 'r') as f:
+            fight_ids = json.load(f)
+        print(f"Загружен список боёв: {len(fight_ids)} ID")
     else:
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
         fight_ids = fetch_fight_ids(EVENT_URL)
-        state = {
-            "event_id": EVENT_ID,
-            "fight_ids": fight_ids,
-            "current_index": 0,
-            "finished_all": False
-        }
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-        print(f"Кэш не найден. Старт: event_id={EVENT_ID}, боёв: {len(fight_ids)}, ID: {fight_ids}")
+        with open(FIGHT_IDS_FILE, 'w') as f:
+            json.dump(fight_ids, f)
+        print(f"Список боёв сохранён: {len(fight_ids)} ID")
 
-    if state.get("finished_all"):
-        print("Все бои турнира завершены.")
+    if current_index >= len(fight_ids):
+        print("Все бои турнира обработаны.")
         return
 
-    current_fight_id = state["fight_ids"][state["current_index"]]
-    event_id = state["event_id"]
-
+    current_fight_id = fight_ids[current_index]
     print(f"Обрабатываем бой {current_fight_id}")
-    data = get_fight_stats(event_id, current_fight_id)
+    data = get_fight_stats(EVENT_ID, current_fight_id)
     if not data:
         print("Не удалось получить данные боя.")
         return
@@ -409,15 +411,10 @@ def main():
     if data.get("finished"):
         if os.path.exists(MSG_ID_FILE):
             os.remove(MSG_ID_FILE)
-        state["current_index"] += 1
-        if state["current_index"] >= len(state["fight_ids"]):
-            state["finished_all"] = True
-            print("Все бои турнира обработаны.")
-        else:
-            print(f"Переход к следующему бою ID {state['fight_ids'][state['current_index']]}")
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-        print("Кэш обновлён.")
+        current_index += 1
+        with open(CURRENT_INDEX_FILE, 'w') as f:
+            f.write(str(current_index))
+        print(f"Бой завершён. Обновлён current_index: {current_index}")
 
 if __name__ == "__main__":
     main()
