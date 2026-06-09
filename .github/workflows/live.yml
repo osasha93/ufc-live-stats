@@ -31,16 +31,22 @@ jobs:
           EVENT_ID: ${{ secrets.EVENT_ID }}
         run: python main.py
 
+      - name: Debug git state before commit
+        run: |
+          echo "Текущая ветка: $(git branch --show-current)"
+          git status
+          ls -l current_index.txt fight_ids.json live_message_id.txt 2>/dev/null || echo "Файлов нет"
+
       - name: Commit and push state
         if: success()
         run: |
-          echo "Текущая ветка: $(git branch --show-current)"
-          echo "Статус до коммита:"
-          git status
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add current_index.txt fight_ids.json live_message_id.txt 2>/dev/null || true
-          git diff --staged --quiet && echo "Нет изменений для коммита" || (
-            git commit -m "Update state" &&
+          git diff --staged --quiet && echo "Нет изменений" || (
+            echo "Коммитим изменения..."
+            git commit -m "Update state"
+            echo "Пушим..."
             git push origin HEAD:main
+            echo "Пуш выполнен."
           )
