@@ -40,7 +40,7 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (исправленный, без разворота) ----------
+# ---------- Сбор ID боёв (БЕЗ разворота – DOM уже правильный) ----------
 def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
@@ -49,19 +49,9 @@ def fetch_fight_ids(event_url):
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    
-    # Собираем ID в том порядке, как они идут в DOM (главный → первый)
-    dom_ids = [int(card["data-fmid"]) for card in cards]
-    
-    # Явный ручной разворот: проходим от конца к началу
-    fight_ids = []
-    for i in range(len(dom_ids) - 1, -1, -1):
-        fight_ids.append(dom_ids[i])
-    
-    # Дебаг-вывод, чтобы убедиться в правильности
-    print(f"DEBUG: порядок в DOM (главный → первый): {dom_ids}")
-    print(f"DEBUG: порядок после ручного разворота (первый → главный): {fight_ids}")
-    
+    # Порядок в DOM уже от первого боя к главному – ничего не меняем!
+    fight_ids = [int(card["data-fmid"]) for card in cards]
+    print(f"DEBUG: порядок из DOM (первый → главный): {fight_ids}")
     return fight_ids
 
 # ---------- Парсинг метрик ----------
@@ -364,7 +354,7 @@ def generate_image(data):
     buf.seek(0)
     return buf
 
-# ---------- Основная логика ----------
+# ---------- Основная логика (БЕЗ разворота) ----------
 def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -373,7 +363,7 @@ def main():
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
         fight_ids = fetch_fight_ids(EVENT_URL)
-        print(f"DEBUG: порядок после сбора: {fight_ids}")
+        # Не делаем никаких разворотов – используем как есть!
         state = {
             "event_id": EVENT_ID,
             "fight_ids": fight_ids,
