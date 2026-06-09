@@ -7,6 +7,7 @@ import io
 import re
 from PIL import Image, ImageDraw, ImageFont
 
+
 # ---------- Настройки ----------
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -357,6 +358,11 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
+
+    # ВРЕМЕННО: удаляем старый state.json для чистого старта
+if os.path.exists(STATE_FILE):
+    os.remove(STATE_FILE)
+    
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
