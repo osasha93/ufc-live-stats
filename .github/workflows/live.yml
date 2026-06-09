@@ -11,14 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache state
+         - name: Cache state
         uses: actions/cache@v3
         with:
           path: |
             live_message_id.txt
-            live_state.json
             state.json
-          key: live-state-${{ runner.os }}
+          key: live-state-v2-${{ runner.os }}
 
       - name: Setup Python
         uses: actions/setup-python@v4
