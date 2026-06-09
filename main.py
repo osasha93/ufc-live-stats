@@ -40,10 +40,19 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- ВРЕМЕННАЯ фиксированная функция (правильный порядок) ----------
+# ---------- Сбор ID боёв (автоматический) ----------
 def fetch_fight_ids(event_url):
-    # ПРАВИЛЬНЫЙ порядок: от первого боя к главному
-    return [12827, 12761, 12825, 12828, 12760, 12887, 12889, 12888, 12890, 12826, 12822, 12732]
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(event_url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
+    if not cards:
+        raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
+    fight_ids = [int(card["data-fmid"]) for card in cards]
+    # Разворачиваем порядок: от первого боя к главному
+    fight_ids = fight_ids[::-1]
+    return fight_ids
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
@@ -347,10 +356,6 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    # Временное удаление старого state.json (уберите после теста)
-    if os.path.exists(STATE_FILE):
-        os.remove(STATE_FILE)
-
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
@@ -358,7 +363,6 @@ def main():
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
         fight_ids = fetch_fight_ids(EVENT_URL)   # уже в правильном порядке
-        # НЕ ДЕЛАЕМ РАЗВОРОТ, потому что функция возвращает правильный порядок
         state = {
             "event_id": EVENT_ID,
             "fight_ids": fight_ids,
