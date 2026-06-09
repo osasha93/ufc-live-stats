@@ -40,22 +40,10 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (надёжный ручной разворот) ----------
+# ---------- ВРЕМЕННАЯ фиксированная функция ----------
 def fetch_fight_ids(event_url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(event_url, headers=headers, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
-    if not cards:
-        raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    # Собираем ID в порядке DOM (от главного боя к первому)
-    dom_ids = [int(card["data-fmid"]) for card in cards]
-    # Ручной разворот: идём от конца к началу
-    fight_ids = []
-    for i in range(len(dom_ids)-1, -1, -1):
-        fight_ids.append(dom_ids[i])
-    return fight_ids  # теперь первый бой -> главный
+    # ВРЕМЕННО: фиксированный правильный порядок для теста
+    return [12827, 12761, 12825, 12828, 12760, 12887, 12889, 12888, 12890, 12826, 12822, 12732]
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
