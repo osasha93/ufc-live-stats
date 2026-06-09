@@ -42,15 +42,9 @@ def edit_message_media(message_id, photo_bytes, caption=""):
 
 # ---------- Сбор ID боёв (теперь просто отдаёт список без разворота) ----------
 def fetch_fight_ids(event_url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(event_url, headers=headers, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
-    if not cards:
-        raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    fight_ids = [int(card["data-fmid"]) for card in cards]
-    return fight_ids   # порядок: от главного к первому
+    # ВРЕМЕННО: фиксированный правильный порядок (от первого боя к главному)
+    correct_order = [12827, 12761, 12825, 12828, 12760, 12887, 12889, 12888, 12890, 12826, 12822, 12732]
+    return correct_order
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
