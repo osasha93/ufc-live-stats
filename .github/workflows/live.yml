@@ -10,14 +10,15 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Cache state files
+        id: cache-state
         uses: actions/cache@v3
         with:
           path: |
             state.json
             live_message_id.txt
-          key: ufc-live-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          key: ufc-live-state-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            ufc-live-${{ runner.os }}-
+            ufc-live-state-${{ runner.os }}-
 
       - name: Setup Python
         uses: actions/setup-python@v4
