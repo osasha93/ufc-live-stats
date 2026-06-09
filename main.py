@@ -12,8 +12,8 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-EVENT_URL = os.environ.get("EVENT_URL", "")          # ссылка на страницу турнира
-EVENT_ID = int(os.environ["EVENT_ID"])               # обязателен, узнаётся через DevTools
+EVENT_URL = os.environ.get("EVENT_URL", "")
+EVENT_ID = int(os.environ["EVENT_ID"])
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -40,7 +40,7 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор fight_ids с страницы ----------
+# ---------- Сбор ID боёв (исправленный порядок) ----------
 def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
@@ -50,7 +50,7 @@ def fetch_fight_ids(event_url):
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
     fight_ids = [int(card["data-fmid"]) for card in cards]
-    fight_ids.reverse()  # первый бой → главный
+    fight_ids.reverse()   # ← ВАЖНО: переворачиваем, чтобы первый бой был первым
     return fight_ids
 
 # ---------- Парсинг метрик ----------
@@ -385,6 +385,7 @@ def main():
         print("Не удалось получить данные боя.")
         return
 
+    # Если бой ещё не начался и сообщения нет – просто выходим (не спамим)
     if data.get("not_started") and not os.path.exists(MSG_ID_FILE):
         print("Бой ещё не начался, ждём.")
         return
