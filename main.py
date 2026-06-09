@@ -40,7 +40,7 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Сбор ID боёв (автоматический с надёжным разворотом) ----------
+# ---------- Сбор ID боёв (исправленный, без разворота) ----------
 def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(event_url, headers=headers, timeout=15)
@@ -49,12 +49,8 @@ def fetch_fight_ids(event_url):
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
-    # Порядок в DOM: от главного боя к первому
-    dom_ids = [int(card["data-fmid"]) for card in cards]
-    # Разворачиваем: первый бой -> главный
-    fight_ids = list(reversed(dom_ids))
-    # Отладочный вывод (можно удалить после теста)
-    print(f"DEBUG: порядок после разворота: {fight_ids}")
+    # Идём по карточкам в обратном порядке, чтобы сразу получить от первого боя к главному
+    fight_ids = [int(card["data-fmid"]) for card in reversed(cards)]
     return fight_ids
 
 # ---------- Парсинг метрик ----------
@@ -365,7 +361,8 @@ def main():
     else:
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
-        fight_ids = fetch_fight_ids(EVENT_URL)   # уже в правильном порядке
+        fight_ids = fetch_fight_ids(EVENT_URL)
+        print(f"DEBUG: порядок после сбора: {fight_ids}")
         state = {
             "event_id": EVENT_ID,
             "fight_ids": fight_ids,
