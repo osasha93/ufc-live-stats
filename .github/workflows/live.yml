@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-         - name: Cache state
+      - name: Cache state
         uses: actions/cache@v3
         with:
           path: |
@@ -33,5 +33,5 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
           EVENT_URL: ${{ secrets.EVENT_URL }}
-          EVENT_ID: ${{ secrets.EVENT_ID }}   # ← ВОТ ЭТА СТРОКА ДОБАВЛЕНА
+          EVENT_ID: ${{ secrets.EVENT_ID }}
         run: python main.py
