@@ -12,9 +12,8 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 
-EVENT_URL = os.environ.get("EVENT_URL", "")
-MANUAL_EVENT_ID = os.environ.get("EVENT_ID", "")
-MANUAL_FIGHT_IDS = os.environ.get("FIGHT_IDS", "")
+EVENT_URL = os.environ.get("EVENT_URL", "")          # ссылка на страницу турнира
+EVENT_ID = int(os.environ["EVENT_ID"])               # обязателен, узнаётся через DevTools
 
 STATE_FILE = "state.json"
 MSG_ID_FILE = "live_message_id.txt"
@@ -41,60 +40,18 @@ def edit_message_media(message_id, photo_bytes, caption=""):
         data["message_thread_id"] = int(THREAD_ID)
     return requests.post(url, data=data, files=files).json()
 
-# ---------- Определение event_id и fight_ids ----------
-def get_event_data():
-    # Ручной режим
-    if MANUAL_EVENT_ID and MANUAL_FIGHT_IDS:
-        fight_ids = [int(f.strip()) for f in MANUAL_FIGHT_IDS.split(",") if f.strip()]
-        print(f"Ручной режим: event_id={MANUAL_EVENT_ID}, бои={fight_ids}")
-        return int(MANUAL_EVENT_ID), fight_ids
-
-    if not EVENT_URL:
-        raise Exception("Не задан ни EVENT_URL, ни EVENT_ID/FIGHT_IDS.")
-
-    print(f"Загружаем страницу события: {EVENT_URL}")
+# ---------- Сбор fight_ids с страницы ----------
+def fetch_fight_ids(event_url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(EVENT_URL, headers=headers, timeout=15)
+    resp = requests.get(event_url, headers=headers, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Собираем ID боёв
     cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события. Дождитесь публикации карда.")
     fight_ids = [int(card["data-fmid"]) for card in cards]
-    fight_ids.reverse()
-    print(f"Найдено боёв: {len(fight_ids)}, ID: {fight_ids}")
-
-    # Определяем event_id через API события
-    slug = EVENT_URL.rstrip("/").split("/")[-1]
-    api_url = f"https://www.ufc.com/api/event/{slug}"
-    api_headers = {
-        "User-Agent": headers["User-Agent"],
-        "Accept": "application/json, text/plain, */*",
-        "Referer": EVENT_URL,
-        "X-Requested-With": "XMLHttpRequest"
-    }
-    try:
-        api_resp = requests.get(api_url, headers=api_headers, timeout=15)
-        print(f"Статус API: {api_resp.status_code}")
-        if api_resp.status_code == 200 and api_resp.text.strip():
-            # Выводим первые 500 символов для анализа
-            print("Ответ API (первые 500 символов):")
-            print(api_resp.text[:500])
-            data = api_resp.json()
-            # Ищем eventId, id или id события
-            event_id = data.get("eventId") or data.get("id") or data.get("event_id")
-            if event_id:
-                print(f"Event ID через API: {event_id}")
-                return int(event_id), fight_ids
-            else:
-                print("Ключ eventId/id не найден в JSON. Попробуйте указать EVENT_ID вручную.")
-    except Exception as e:
-        print(f"Ошибка API: {e}")
-
-    # Если API не помог – просим ручной ввод
-    raise Exception("Не удалось определить Event ID автоматически. Укажите EVENT_ID в секретах GitHub (например, 1313).")
+    fight_ids.reverse()  # первый бой → главный
+    return fight_ids
 
 # ---------- Парсинг метрик ----------
 def parse_metric_from_element(metric_el):
@@ -402,17 +359,18 @@ def main():
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
     else:
-        print("Получаем event_id и список боёв...")
-        event_id, fight_ids = get_event_data()
+        if not EVENT_URL:
+            raise Exception("Укажите EVENT_URL в секретах GitHub")
+        fight_ids = fetch_fight_ids(EVENT_URL)
         state = {
-            "event_id": event_id,
+            "event_id": EVENT_ID,
             "fight_ids": fight_ids,
             "current_index": 0,
             "finished_all": False
         }
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
-        print(f"Состояние сохранено: event_id={event_id}, бои={fight_ids}")
+        print(f"Старт: event_id={EVENT_ID}, боёв: {len(fight_ids)}, ID: {fight_ids}")
 
     if state.get("finished_all"):
         print("Все бои турнира завершены.")
@@ -421,7 +379,7 @@ def main():
     current_fight_id = state["fight_ids"][state["current_index"]]
     event_id = state["event_id"]
 
-    print(f"Обрабатываем бой {current_fight_id} (индекс {state['current_index']})")
+    print(f"Обрабатываем бой {current_fight_id}")
     data = get_fight_stats(event_id, current_fight_id)
     if not data:
         print("Не удалось получить данные боя.")
