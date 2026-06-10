@@ -354,6 +354,19 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
+    # Проверяем, не изменился ли EVENT_URL (турнир)
+    if os.path.exists(FIGHT_IDS_FILE):
+        with open(FIGHT_IDS_FILE, 'r') as f:
+            old_data = json.load(f)
+        if isinstance(old_data, dict) and old_data.get("event_url") != EVENT_URL:
+            print("Обнаружен новый турнир! Сбрасываем прогресс.")
+            if os.path.exists(CURRENT_INDEX_FILE):
+                os.remove(CURRENT_INDEX_FILE)
+            if os.path.exists(FIGHT_IDS_FILE):
+                os.remove(FIGHT_IDS_FILE)
+            if os.path.exists(MSG_ID_FILE):
+                os.remove(MSG_ID_FILE)
+
     # Загружаем индекс из файла (если есть)
     current_index = 0
     if os.path.exists(CURRENT_INDEX_FILE):
@@ -365,14 +378,21 @@ def main():
     fight_ids = None
     if os.path.exists(FIGHT_IDS_FILE):
         with open(FIGHT_IDS_FILE, 'r') as f:
-            fight_ids = json.load(f)
+            data = json.load(f)
+            if isinstance(data, list):
+                fight_ids = data
+                # обновим структуру для будущих проверок
+                with open(FIGHT_IDS_FILE, 'w') as fw:
+                    json.dump({"event_url": EVENT_URL, "fights": fight_ids}, fw)
+            else:
+                fight_ids = data.get("fights", [])
         print(f"Загружен список боёв: {len(fight_ids)} ID")
     else:
         if not EVENT_URL:
             raise Exception("Укажите EVENT_URL в секретах GitHub")
         fight_ids = fetch_fight_ids(EVENT_URL)
         with open(FIGHT_IDS_FILE, 'w') as f:
-            json.dump(fight_ids, f)
+            json.dump({"event_url": EVENT_URL, "fights": fight_ids}, f)
         print(f"Список боёв сохранён: {len(fight_ids)} ID")
 
     if current_index >= len(fight_ids):
