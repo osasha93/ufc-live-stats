@@ -12,7 +12,7 @@ DEFAULT_CLOUDFRONT_DOMAIN = "d29dxerjsp82wz.cloudfront.net"
 
 # ---------- 1. Определение CloudFront домена ----------
 def find_cloudfront_domain():
-    # Ищем в скриптах страницы события
+    # Пробуем найти в скриптах страницы события
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(EVENT_URL, headers=headers, timeout=15)
@@ -26,13 +26,13 @@ def find_cloudfront_domain():
         pass
     return DEFAULT_CLOUDFRONT_DOMAIN
 
-# ---------- 2. Автоматическое получение event_id ----------
+# ---------- 2. Получение Event ID ----------
 def find_event_id(domain):
     # Если задан вручную, вернуть его
     if MANUAL_EVENT_ID:
         return int(MANUAL_EVENT_ID)
 
-    # Пробуем найти в скриптах страницы события (вдруг повезёт)
+    # Пробуем найти на странице события
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(EVENT_URL, headers=headers, timeout=15)
@@ -45,7 +45,7 @@ def find_event_id(domain):
     except:
         pass
 
-    # Если не нашли, попробуем через API предстоящих событий
+    # Пробуем через API предстоящих событий
     try:
         api_url = f"https://{domain}/api/v3/event/upcoming.json?limit=1"
         headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
@@ -66,22 +66,21 @@ domain = find_cloudfront_domain()
 print(f"CloudFront домен: {domain}")
 
 event_id = find_event_id(domain)
-print(f"Автоматически определённый event_id: {event_id}")
+print(f"Определённый event_id: {event_id}")
 
 if event_id:
-    # Дополнительно проверим, что API жив и отвечает
+    # Загружаем список боёв
     test_url = f"https://{domain}/api/v3/event/live/{event_id}.json"
     headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
     resp = requests.get(test_url, headers=headers, timeout=15)
-    print(f"Статус ответа Event API: {resp.status_code}")
     if resp.status_code == 200:
         data = resp.json()
-        # Покажем названия первых трёх боёв, чтобы убедиться, что данные корректны
         fights = data.get("LiveEventDetail", {}).get("FightCard", [])
-        print(f"Количество боёв в карде: {len(fights)}")
-        for f in fights[:3]:
-            print(f"  - {f.get('FightId')} (order {f.get('FightOrder')}) status: {f.get('Status')}")
+        print(f"Количество боёв: {len(fights)}")
+        print("Список боёв (FightID, Order, Status):")
+        for f in fights:
+            print(f"  {f.get('FightId')} (order {f.get('FightOrder')}) - {f.get('Status')}")
     else:
-        print(f"Ответ Event API: {resp.text[:300]}")
+        print(f"Ошибка загрузки FightCard: {resp.status_code} {resp.text[:200]}")
 else:
-    print("Не удалось определить event_id. Проверьте секрет EVENT_ID или страницу события.")
+    print("Не удалось определить event_id.")
