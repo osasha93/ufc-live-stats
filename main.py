@@ -54,7 +54,7 @@ def fetch_fight_ids(event_url):
     fight_ids.reverse()
     return fight_ids
 
-# ---------- Парсинг метрик ----------
+# ---------- Универсальный парсинг метрики ----------
 def parse_metric_from_element(metric_el):
     red_num = metric_el.find("span", class_="c-stat-metric-compare__number")
     red_pct = metric_el.find("span", class_="c-stat-metric-compare__percent")
@@ -85,7 +85,7 @@ def parse_metric_from_element(metric_el):
     a2_text = extract_attempts_text(blue_att)
     return (v1, p1, a1_text), (v2, p2, a2_text)
 
-# ---------- Статистика боя ----------
+# ---------- Статистика боя (исправленная) ----------
 def get_fight_stats(event_id, fight_id):
     url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post?t={int(time.time())}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -102,86 +102,88 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # Имена бойцов
+    # Имена и фото из JSON
     names = []
+    photos = []
+    winner_idx = -1
     try:
         json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
         if json_script and json_script.string:
             data = json.loads(json_script.string)
             athletes = data.get("matchup", {}).get("athletes", [])
             if len(athletes) >= 2:
-                for athlete in athletes[:2]:
+                for i, athlete in enumerate(athletes[:2]):
                     given = athlete.get("name_given", "")
                     family = athlete.get("name_family", "")
                     full_name = f"{given} {family}".strip() or "Unknown"
                     names.append(full_name)
+                    img_url = athlete.get("img", "")
+                    if img_url and img_url.startswith("http"):
+                        photos.append(img_url)
+                    else:
+                        photos.append(None)
+                    if athlete.get("outcome") is True:
+                        winner_idx = i
     except:
         pass
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
-
-    # Фото
-    photos = []
-    try:
-        if 'data' in locals():
-            athletes = data.get("matchup", {}).get("athletes", [])
-            for athlete in athletes[:2]:
-                img_url = athlete.get("img", "")
-                if img_url and img_url.startswith("http"):
-                    photos.append(img_url)
-                else:
-                    photos.append(None)
-    except:
-        pass
     while len(photos) < 2:
         photos.append(None)
 
-    # Раунды (только группа Fight Overview)
+    # Обход вкладок: только те, что начинаются с "Round"
     round_data = []
     tab_buttons = soup.select("button.c-tabs__nav-btn")
     for btn in tab_buttons:
         round_title = btn.get_text(strip=True)
-        if round_title == "Full Fight":
+        if not round_title.startswith("Round"):
             continue
         panel_id = btn.get("aria-controls")
-        if not panel_id or not panel_id.startswith("tab-panel-stats-fight-overview-"):
+        if not panel_id:
             continue
         panel = soup.find("div", id=panel_id)
         if not panel:
             continue
-        container = panel.find("div", class_="c-stat-group__container")
-        if not container:
-            continue
-        metrics_block = container.find("div", class_="c-stat-metric-compare-group")
-        if not metrics_block:
+
+        # Ищем все блоки метрик внутри панели
+        metric_blocks = panel.find_all("div", class_="c-stat-metric-compare")
+        if not metric_blocks:
             continue
 
-        total_strikes_el = metrics_block.find("div", class_="total_strikes")
-        takedowns_el = metrics_block.find("div", class_="takedowns")
-        sig_strikes_el = metrics_block.find("div", class_="sig_strikes")
-        knockdowns_el = metrics_block.find("div", class_="knockdowns")
+        # Словарь для текущего раунда
+        round_metrics = {
+            "Total Strikes": ((0,0,""),(0,0,"")),
+            "Takedowns": ((0,0,""),(0,0,"")),
+            "Sig. Strikes": ((0,0,""),(0,0,"")),
+            "Knockdowns": ((0,0,""),(0,0,""))
+        }
 
-        total_s = parse_metric_from_element(total_strikes_el) if total_strikes_el else ((0,0,""),(0,0,""))
-        takedowns = parse_metric_from_element(takedowns_el) if takedowns_el else ((0,0,""),(0,0,""))
-        sig_s = parse_metric_from_element(sig_strikes_el) if sig_strikes_el else ((0,0,""),(0,0,""))
-        knockdowns = parse_metric_from_element(knockdowns_el) if knockdowns_el else ((0,0,""),(0,0,""))
+        for block in metric_blocks:
+            label_el = block.find("span", class_="c-stat-metric-compare__label")
+            if not label_el:
+                continue
+            label = label_el.get_text(strip=True)
+            if label in round_metrics:
+                round_metrics[label] = parse_metric_from_element(block)
+
+        # Проверяем, есть ли хоть одно ненулевое значение
+        total_vals = sum([v for metric in round_metrics.values() for v in (metric[0][0], metric[1][0])])
+        if total_vals == 0:
+            continue   # пустой раунд, пропускаем
 
         round_data.append({
             "title": round_title,
-            "Total Strikes": total_s,
-            "Takedowns": takedowns,
-            "Sig. Strikes": sig_s,
-            "Knockdowns": knockdowns
+            **round_metrics
         })
 
     if not round_data:
-        return {"not_started": True, "names": names, "photos": photos, "winner_idx": -1}
+        return {"not_started": True, "names": names, "photos": photos, "winner_idx": winner_idx}
 
     return {
         "not_started": False,
         "names": names,
         "photos": photos,
-        "winner_idx": -1,
+        "winner_idx": winner_idx,
         "rounds": round_data,
         "finished": finished
     }
@@ -190,6 +192,7 @@ def get_fight_stats(event_id, fight_id):
 def generate_image(data):
     names = data["names"]
     photos = data["photos"]
+    winner_idx = data.get("winner_idx", -1)
     rounds = data["rounds"]
 
     BG = (18, 22, 35)
@@ -208,28 +211,25 @@ def generate_image(data):
     except:
         font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
 
-    def load_photo(primary_url, fallback_url=None):
-        if not primary_url:
+    def load_photo(url):
+        if not url:
             return None
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://www.ufc.com/",
             "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8"
         }
-        for url in (primary_url, fallback_url):
-            if not url:
-                continue
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                    img.thumbnail((72, 72), Image.LANCZOS)
-                    mask = Image.new("L", (72, 72), 0)
-                    ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
-                    img.putalpha(mask)
-                    return img
-            except:
-                continue
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                img.thumbnail((72, 72), Image.LANCZOS)
+                mask = Image.new("L", (72, 72), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+                img.putalpha(mask)
+                return img
+        except:
+            pass
         return None
 
     def draw_initials(draw, xy, name, color):
@@ -241,16 +241,17 @@ def generate_image(data):
         w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
         draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
 
-    photo1 = load_photo(photos[0][0], photos[0][1])
-    photo2 = load_photo(photos[1][0], photos[1][1])
+    photo1 = load_photo(photos[0])
+    photo2 = load_photo(photos[1])
+
+    name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
+    name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
 
     max_vals = {}
     for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
-        vals = []
-        for rd in rounds:
-            (v1, _, _), (v2, _, _) = rd.get(m, ((0,0,""),(0,0,"")))
-            vals.extend([v1, v2])
-        max_vals[m] = max(vals) if vals else 1
+        vals = [v for rd in rounds for v in rd.get(m, ((0,0,""),(0,0,""))) ]
+        flat_vals = [pair[0] for pair in vals] + [pair[1] for pair in vals]
+        max_vals[m] = max(flat_vals) if flat_vals else 1
 
     img_w = 760
     header_h = 120
@@ -268,14 +269,14 @@ def generate_image(data):
         img.paste(photo1, (25, y), photo1)
     else:
         draw_initials(draw, (25, y), names[0], RED)
-    draw.text((110, y+28), names[0], fill=RED, font=font_name)
+    draw.text((110, y+28), name1, fill=RED, font=font_name)
 
     if photo2:
         img.paste(photo2, (img_w-97, y), photo2)
     else:
         draw_initials(draw, (img_w-97, y), names[1], BLUE)
-    name2_w = draw.textlength(names[1], font=font_name)
-    draw.text((img_w - 110 - name2_w, y+28), names[1], fill=BLUE, font=font_name)
+    name2_w = draw.textlength(name2, font=font_name)
+    draw.text((img_w - 110 - name2_w, y+28), name2, fill=BLUE, font=font_name)
 
     draw.line([(20, y+85), (img_w-20, y+85)], fill=(100, 100, 130), width=2)
     y = header_h
