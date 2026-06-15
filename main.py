@@ -1,29 +1,116 @@
 import requests
 from bs4 import BeautifulSoup
 import os
+import json
+import re
 
-EVENT_URL = "https://www.ufc.com/event/ufc-fight-night-june-20-2026"
+# ---------- Настройки ----------
+EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-fight-night-june-20-2026")
 
-headers = {"User-Agent": "Mozilla/5.0"}
-resp = requests.get(EVENT_URL, headers=headers, timeout=15)
-soup = BeautifulSoup(resp.text, "html.parser")
+# ---------- 1. Event ID и Fight ID из HTML ----------
+def fetch_ids_from_html():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(EVENT_URL, headers=headers, timeout=15)
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-# --- Event ID ---
-ticker = soup.find("div", id="c-listing-ticker")
-if not ticker:
-    ticker = soup.find("div", class_="c-listing-ticker--footer")
-event_id = int(ticker["data-fmid"]) if ticker and ticker.get("data-fmid") else None
+    ticker = soup.find("div", id="c-listing-ticker")
+    if not ticker:
+        ticker = soup.find("div", class_="c-listing-ticker--footer")
+    if not ticker or not ticker.get("data-fmid"):
+        raise Exception("Event ID не найден – возможно, кард ещё не опубликован.")
+    event_id = int(ticker["data-fmid"])
 
+    fight_cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
+    fight_ids = [int(card["data-fmid"]) for card in fight_cards]
+
+    return event_id, fight_ids
+
+# ---------- 2. CloudFront домен ----------
+def get_cloudfront_domain():
+    # Пробуем через редирект известного боя
+    try:
+        test_url = "https://www.ufc.com/matchup/0/12711/post"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(test_url, headers=headers, allow_redirects=False, timeout=15)
+        if resp.status_code in (301, 302) and "Location" in resp.headers:
+            location = resp.headers["Location"]
+            match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', location)
+            if match:
+                return match.group(1).replace('https://', '')
+    except Exception as e:
+        print(f"Ошибка редиректа: {e}")
+
+    # Ищем в скриптах страницы события
+    try:
+        resp = requests.get(EVENT_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for script in soup.find_all('script'):
+            if script.string and 'cloudfront' in script.string:
+                match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
+                if match:
+                    return match.group(1).replace('https://', '')
+    except:
+        pass
+
+    raise Exception("Не удалось определить CloudFront домен.")
+
+# ---------- 3. Получение статусов через Event API ----------
+def fetch_fight_statuses(domain, event_id, fight_ids):
+    url = f"https://{domain}/api/v3/event/live/{event_id}.json"
+    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    if resp.status_code != 200:
+        print(f"Ошибка Event API: {resp.status_code} {resp.text[:200]}")
+        return None
+    data = resp.json()
+    api_fights = data.get("LiveEventDetail", {}).get("FightCard", [])
+    status_map = {f["FightId"]: f.get("Status", "?") for f in api_fights if "FightId" in f}
+    return [status_map.get(fid, "?") for fid in fight_ids]
+
+# ---------- 4. Пример статистики первого боя ----------
+def get_fight_stats(domain, fight_id):
+    url = f"https://{domain}/api/v3/fight/live/{fight_id}.json"
+    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    if resp.status_code != 200:
+        print(f"Ошибка Fight API: {resp.status_code}")
+        return None
+    lf = resp.json().get("LiveFightDetail", {})
+    fighters = lf.get("Fighters", [])
+    names = [f"{f.get('Name', {}).get('FirstName', '')} {f.get('Name', {}).get('LastName', '')}".strip() for f in fighters[:2]]
+    result = lf.get("Result", {})
+    method = result.get("Method", "")
+    ending_round = result.get("EndingRound", "")
+    ending_time = result.get("EndingTime", "")
+    result_str = f"{method} (R{ending_round} {ending_time})" if method else ""
+    rounds = lf.get("RoundStats", [])
+    print(f"  Имена: {names}")
+    print(f"  Результат: {result_str}")
+    print(f"  Количество раундов в API: {len(rounds)}")
+    if rounds:
+        for rd in rounds[0].get("Rounds", [])[:1]:  # первый раунд
+            print(f"  Пример Round {rd['RoundNumber']}: Total Strikes red={rd.get('TotalStrikesLanded','?')}, blue={rd.get('TotalStrikesLanded','?')}")
+
+# ========== ДИАГНОСТИКА ==========
+print("=== 1. ПОЛУЧЕНИЕ ID ИЗ HTML ===")
+event_id, fight_ids = fetch_ids_from_html()
 print(f"Event ID: {event_id}")
+print(f"Fight IDs (порядок в DOM, первый бой → главный): {fight_ids}")
 
-# --- Fight IDs (снизу вверх, т.е. от первого боя к главному) ---
-fight_cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
-fight_ids = [int(card["data-fmid"]) for card in fight_cards]
-# Порядок в HTML: первый в DOM – главный бой, последний – прелимы.
-# Чтобы получить от первого боя к главному, переворачиваем список.
-fight_ids_reversed = list(reversed(fight_ids))
+print("\n=== 2. ОПРЕДЕЛЕНИЕ ДОМЕНА ===")
+domain = get_cloudfront_domain()
+print(f"CloudFront домен: {domain}")
 
-print(f"Количество боёв: {len(fight_ids_reversed)}")
-print("Fight ID (от первого к главному):")
-for fid in fight_ids_reversed:
-    print(f"  {fid}")
+print("\n=== 3. СТАТУСЫ БОЁВ ===")
+statuses = fetch_fight_statuses(domain, event_id, fight_ids)
+if statuses:
+    for fid, st in zip(fight_ids, statuses):
+        print(f"  {fid}: {st}")
+else:
+    print("Не удалось получить статусы.")
+
+print("\n=== 4. ПРИМЕР СТАТИСТИКИ ПЕРВОГО БОЯ ===")
+first_fight = fight_ids[0]
+get_fight_stats(domain, first_fight)
+
+print("\nДиагностика завершена.")
