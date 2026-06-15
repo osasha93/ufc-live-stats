@@ -8,9 +8,12 @@ import re
 EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-fight-night-june-20-2026")
 MANUAL_EVENT_ID = os.environ.get("EVENT_ID", None)
 
-# ---------- 1. Определение CloudFront домена (без дефолта) ----------
+FALLBACK_DOMAIN = "d29dxerjsp82wz.cloudfront.net"   # резерв на случай, если новый домен не найден
+DOMAIN_FILE = "cloudfront_domain.txt"
+
+# ---------- 1. Определение CloudFront домена ----------
 def find_cloudfront_domain():
-    """Ищет домен cloudfront на странице события. Возвращает None, если не найден."""
+    # Пробуем найти на странице события
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(EVENT_URL, headers=headers, timeout=15)
@@ -19,14 +22,28 @@ def find_cloudfront_domain():
             if script.string and 'cloudfront' in script.string:
                 match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
                 if match:
-                    return match.group(1).replace('https://', '').replace('http://', '')
+                    domain = match.group(1).replace('https://', '').replace('http://', '')
+                    with open(DOMAIN_FILE, 'w') as f:
+                        f.write(domain)
+                    print(f"Найден домен на странице: {domain}")
+                    return domain
     except Exception as e:
         print(f"Ошибка при поиске домена: {e}")
-    return None
+
+    # Если не найден, пробуем загрузить из файла
+    if os.path.exists(DOMAIN_FILE):
+        with open(DOMAIN_FILE, 'r') as f:
+            domain = f.read().strip()
+            if domain:
+                print(f"Домен загружен из файла: {domain}")
+                return domain
+
+    # Иначе используем резервный
+    print(f"Использую резервный домен: {FALLBACK_DOMAIN}")
+    return FALLBACK_DOMAIN
 
 # ---------- 2. Получение Event ID ----------
 def find_event_id(domain):
-    # Если задан вручную, вернуть его
     if MANUAL_EVENT_ID:
         return int(MANUAL_EVENT_ID)
 
@@ -43,30 +60,25 @@ def find_event_id(domain):
     except Exception as e:
         print(f"Ошибка при поиске eventId на странице: {e}")
 
-    # Если домен известен, пробуем через API предстоящих событий
-    if domain:
-        try:
-            api_url = f"https://{domain}/api/v3/event/upcoming.json?limit=1"
-            headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
-            resp = requests.get(api_url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                events = data.get("LiveEventDetails", [])
-                if events:
-                    return events[0].get("EventId")
-        except Exception as e:
-            print(f"Ошибка при запросе upcoming.json: {e}")
+    # Пробуем через API предстоящих событий
+    try:
+        api_url = f"https://{domain}/api/v3/event/upcoming.json?limit=1"
+        headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
+        resp = requests.get(api_url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            events = data.get("LiveEventDetails", [])
+            if events:
+                return events[0].get("EventId")
+    except Exception as e:
+        print(f"Ошибка при запросе upcoming.json: {e}")
 
     return None
 
 # ---------- Диагностика ----------
 print("=== ДИАГНОСТИКА ===")
 domain = find_cloudfront_domain()
-if domain:
-    print(f"CloudFront домен: {domain}")
-else:
-    print("Не удалось определить CloudFront домен. Проверьте, что страница события содержит скрипты с 'cloudfront'.")
-    exit(1)
+print(f"CloudFront домен: {domain}")
 
 event_id = find_event_id(domain)
 if event_id:
