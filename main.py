@@ -5,12 +5,12 @@ import json
 import re
 
 # ---------- Настройки ----------
-# Укажите новый URL турнира
 EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-fight-night-june-20-2026")
 MANUAL_EVENT_ID = os.environ.get("EVENT_ID", None)
 
-# ---------- 1. Определение CloudFront домена ----------
+# ---------- 1. Определение CloudFront домена (без дефолта) ----------
 def find_cloudfront_domain():
+    """Ищет домен cloudfront на странице события. Возвращает None, если не найден."""
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(EVENT_URL, headers=headers, timeout=15)
@@ -19,10 +19,10 @@ def find_cloudfront_domain():
             if script.string and 'cloudfront' in script.string:
                 match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
                 if match:
-                    return match.group(1).replace('https://', '')
+                    return match.group(1).replace('https://', '').replace('http://', '')
     except Exception as e:
         print(f"Ошибка при поиске домена: {e}")
-    return DEFAULT_CLOUDFRONT_DOMAIN
+    return None
 
 # ---------- 2. Получение Event ID ----------
 def find_event_id(domain):
@@ -43,42 +43,48 @@ def find_event_id(domain):
     except Exception as e:
         print(f"Ошибка при поиске eventId на странице: {e}")
 
-    # Пробуем через API предстоящих событий
-    try:
-        api_url = f"https://{domain}/api/v3/event/upcoming.json?limit=1"
-        headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
-        resp = requests.get(api_url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            events = data.get("LiveEventDetails", [])
-            if events:
-                return events[0].get("EventId")
-    except Exception as e:
-        print(f"Ошибка при запросе upcoming.json: {e}")
+    # Если домен известен, пробуем через API предстоящих событий
+    if domain:
+        try:
+            api_url = f"https://{domain}/api/v3/event/upcoming.json?limit=1"
+            headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
+            resp = requests.get(api_url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                events = data.get("LiveEventDetails", [])
+                if events:
+                    return events[0].get("EventId")
+        except Exception as e:
+            print(f"Ошибка при запросе upcoming.json: {e}")
 
     return None
 
 # ---------- Диагностика ----------
 print("=== ДИАГНОСТИКА ===")
 domain = find_cloudfront_domain()
-print(f"CloudFront домен: {domain}")
+if domain:
+    print(f"CloudFront домен: {domain}")
+else:
+    print("Не удалось определить CloudFront домен. Проверьте, что страница события содержит скрипты с 'cloudfront'.")
+    exit(1)
 
 event_id = find_event_id(domain)
-print(f"Определённый event_id: {event_id}")
-
 if event_id:
-    # Загружаем список боёв
-    test_url = f"https://{domain}/api/v3/event/live/{event_id}.json"
-    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
-    resp = requests.get(test_url, headers=headers, timeout=15)
-    if resp.status_code == 200:
-        data = resp.json()
-        fights = data.get("LiveEventDetail", {}).get("FightCard", [])
-        print(f"Количество боёв: {len(fights)}")
-        print("Список боёв (FightID, Order, Status):")
-        for f in fights:
-            print(f"  {f.get('FightId')} (order {f.get('FightOrder')}) - {f.get('Status')}")
-    else:
-        print(f"Ошибка загрузки FightCard: {resp.status_code} {resp.text[:200]}")
+    print(f"Определённый event_id: {event_id}")
 else:
-    print("Не удалось определить event_id.")
+    print("Не удалось определить Event ID. Укажите его вручную в секретах GitHub (EVENT_ID).")
+    exit(1)
+
+# Загружаем список боёв
+test_url = f"https://{domain}/api/v3/event/live/{event_id}.json"
+headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
+resp = requests.get(test_url, headers=headers, timeout=15)
+if resp.status_code == 200:
+    data = resp.json()
+    fights = data.get("LiveEventDetail", {}).get("FightCard", [])
+    print(f"Количество боёв: {len(fights)}")
+    print("Список боёв (FightID, Order, Status):")
+    for f in fights:
+        print(f"  {f.get('FightId')} (order {f.get('FightOrder')}) - {f.get('Status')}")
+else:
+    print(f"Ошибка загрузки FightCard: {resp.status_code} {resp.text[:200]}")
