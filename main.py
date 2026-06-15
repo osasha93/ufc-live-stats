@@ -6,6 +6,8 @@ import re
 
 # ---------- Настройки ----------
 EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-fight-night-june-20-2026")
+# Временный домен, чтобы завершить диагностику (потом будет автоматически)
+CLOUDFRONT_DOMAIN = "d29dxerjsp82wz.cloudfront.net"
 
 # ---------- 1. Event ID и Fight ID из HTML ----------
 def fetch_ids_from_html():
@@ -25,36 +27,7 @@ def fetch_ids_from_html():
 
     return event_id, fight_ids
 
-# ---------- 2. CloudFront домен ----------
-def get_cloudfront_domain():
-    # Пробуем через редирект известного боя
-    try:
-        test_url = "https://www.ufc.com/matchup/0/12711/post"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(test_url, headers=headers, allow_redirects=False, timeout=15)
-        if resp.status_code in (301, 302) and "Location" in resp.headers:
-            location = resp.headers["Location"]
-            match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', location)
-            if match:
-                return match.group(1).replace('https://', '')
-    except Exception as e:
-        print(f"Ошибка редиректа: {e}")
-
-    # Ищем в скриптах страницы события
-    try:
-        resp = requests.get(EVENT_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for script in soup.find_all('script'):
-            if script.string and 'cloudfront' in script.string:
-                match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
-                if match:
-                    return match.group(1).replace('https://', '')
-    except:
-        pass
-
-    raise Exception("Не удалось определить CloudFront домен.")
-
-# ---------- 3. Получение статусов через Event API ----------
+# ---------- 2. Получение статусов через Event API ----------
 def fetch_fight_statuses(domain, event_id, fight_ids):
     url = f"https://{domain}/api/v3/event/live/{event_id}.json"
     headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
@@ -67,7 +40,7 @@ def fetch_fight_statuses(domain, event_id, fight_ids):
     status_map = {f["FightId"]: f.get("Status", "?") for f in api_fights if "FightId" in f}
     return [status_map.get(fid, "?") for fid in fight_ids]
 
-# ---------- 4. Пример статистики первого боя ----------
+# ---------- 3. Пример статистики первого боя ----------
 def get_fight_stats(domain, fight_id):
     url = f"https://{domain}/api/v3/fight/live/{fight_id}.json"
     headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
@@ -97,20 +70,16 @@ event_id, fight_ids = fetch_ids_from_html()
 print(f"Event ID: {event_id}")
 print(f"Fight IDs (порядок в DOM, первый бой → главный): {fight_ids}")
 
-print("\n=== 2. ОПРЕДЕЛЕНИЕ ДОМЕНА ===")
-domain = get_cloudfront_domain()
-print(f"CloudFront домен: {domain}")
-
-print("\n=== 3. СТАТУСЫ БОЁВ ===")
-statuses = fetch_fight_statuses(domain, event_id, fight_ids)
+print("\n=== 2. СТАТУСЫ БОЁВ ===")
+statuses = fetch_fight_statuses(CLOUDFRONT_DOMAIN, event_id, fight_ids)
 if statuses:
     for fid, st in zip(fight_ids, statuses):
         print(f"  {fid}: {st}")
 else:
     print("Не удалось получить статусы.")
 
-print("\n=== 4. ПРИМЕР СТАТИСТИКИ ПЕРВОГО БОЯ ===")
+print("\n=== 3. ПРИМЕР СТАТИСТИКИ ПЕРВОГО БОЯ ===")
 first_fight = fight_ids[0]
-get_fight_stats(domain, first_fight)
+get_fight_stats(CLOUDFRONT_DOMAIN, first_fight)
 
 print("\nДиагностика завершена.")
