@@ -51,7 +51,7 @@ def fetch_fight_ids(event_url):
     if not cards:
         raise Exception("Бои ещё не добавлены на страницу события.")
     fight_ids = [int(card["data-fmid"]) for card in cards]
-    fight_ids.reverse()   # от первого боя к главному
+    fight_ids.reverse()
     return fight_ids
 
 # ---------- Парсинг метрик ----------
@@ -187,11 +187,151 @@ def get_fight_stats(event_id, fight_id):
     }
 
 # ---------- Генерация картинки ----------
-# (оставьте вашу текущую функцию generate_image без изменений)
-# ...
+def generate_image(data):
+    names = data["names"]
+    photos = data["photos"]
+    rounds = data["rounds"]
+
+    BG = (18, 22, 35)
+    TEXT = (220, 220, 220)
+    RED = (225, 65, 65)
+    BLUE = (65, 125, 225)
+    GOLD = (255, 210, 50)
+    GREEN = (80, 200, 80)
+
+    try:
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+        font_number = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+        font_initials = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except:
+        font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
+
+    def load_photo(primary_url, fallback_url=None):
+        if not primary_url:
+            return None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.ufc.com/",
+            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8"
+        }
+        for url in (primary_url, fallback_url):
+            if not url:
+                continue
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                    img.thumbnail((72, 72), Image.LANCZOS)
+                    mask = Image.new("L", (72, 72), 0)
+                    ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
+                    img.putalpha(mask)
+                    return img
+            except:
+                continue
+        return None
+
+    def draw_initials(draw, xy, name, color):
+        x, y = xy
+        r = 36
+        draw.ellipse([x, y, x+72, y+72], fill=color)
+        initials = "".join([n[0].upper() for n in name.split() if n])[:2]
+        bbox = draw.textbbox((0,0), initials, font=font_initials)
+        w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
+
+    photo1 = load_photo(photos[0][0], photos[0][1])
+    photo2 = load_photo(photos[1][0], photos[1][1])
+
+    max_vals = {}
+    for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
+        vals = []
+        for rd in rounds:
+            (v1, _, _), (v2, _, _) = rd.get(m, ((0,0,""),(0,0,"")))
+            vals.extend([v1, v2])
+        max_vals[m] = max(vals) if vals else 1
+
+    img_w = 760
+    header_h = 120
+    metrics = ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]
+    row_h = 46
+    num_metrics = len(metrics)
+    num_rounds = len(rounds)
+    img_h = header_h + num_rounds * (num_metrics * row_h + 30) + 60
+
+    img = Image.new("RGB", (img_w, img_h), BG)
+    draw = ImageDraw.Draw(img)
+
+    y = 20
+    if photo1:
+        img.paste(photo1, (25, y), photo1)
+    else:
+        draw_initials(draw, (25, y), names[0], RED)
+    draw.text((110, y+28), names[0], fill=RED, font=font_name)
+
+    if photo2:
+        img.paste(photo2, (img_w-97, y), photo2)
+    else:
+        draw_initials(draw, (img_w-97, y), names[1], BLUE)
+    name2_w = draw.textlength(names[1], font=font_name)
+    draw.text((img_w - 110 - name2_w, y+28), names[1], fill=BLUE, font=font_name)
+
+    draw.line([(20, y+85), (img_w-20, y+85)], fill=(100, 100, 130), width=2)
+    y = header_h
+    center_x = img_w // 2
+
+    for rd in rounds:
+        title = rd["title"]
+        draw.text((30, y), title, fill=GOLD, font=font_title)
+        y += 30
+        for m in metrics:
+            (v1, p1, a1_text), (v2, p2, a2_text) = rd.get(m, ((0,0,""),(0,0,"")))
+            max_m = max_vals[m] if max_vals[m] > 0 else 1
+            bar_max = 150
+            w1 = int((v1 / max_m) * bar_max) if v1 > 0 else 0
+            w2 = int((v2 / max_m) * bar_max) if v2 > 0 else 0
+
+            text_w = draw.textlength(m, font=font_metric)
+            draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
+
+            bar_y = y + 18
+            red_left = center_x - w1 - 5
+            draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
+            if m == "Takedowns" and a1_text:
+                red_text = f"{v1} {a1_text} ({p1}%)" if p1 > 0 else f"{v1} {a1_text}"
+            else:
+                red_text = f"{v1} ({p1}%)" if p1 > 0 else str(v1)
+            rtext_w = draw.textlength(red_text, font=font_number)
+            draw.text((red_left - 5 - rtext_w, bar_y - 2), red_text, fill=RED, font=font_number)
+
+            blue_right = center_x + 5 + w2
+            draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
+            if m == "Takedowns" and a2_text:
+                blue_text = f"{v2} {a2_text} ({p2}%)" if p2 > 0 else f"{v2} {a2_text}"
+            else:
+                blue_text = f"{v2} ({p2}%)" if p2 > 0 else str(v2)
+            draw.text((blue_right + 5, bar_y - 2), blue_text, fill=BLUE, font=font_number)
+
+            y += row_h
+        y += 10
+
+    if data.get("finished"):
+        status = "Fight Finished"
+        color = GREEN
+    else:
+        status = "LIVE"
+        color = RED
+    draw.text((30, y + 10), status, fill=color, font=font_title)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 # ---------- Основная логика ----------
 def main():
+    # Проверяем, не изменился ли EVENT_URL
     if os.path.exists(FIGHT_IDS_FILE):
         with open(FIGHT_IDS_FILE, 'r') as f:
             old_data = json.load(f)
