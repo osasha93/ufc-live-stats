@@ -85,7 +85,7 @@ def parse_metric_from_element(metric_el):
     a2_text = extract_attempts_text(blue_att)
     return (v1, p1, a1_text), (v2, p2, a2_text)
 
-# ---------- Статистика боя ----------
+# ---------- Статистика боя (правильный обход табов) ----------
 def get_fight_stats(event_id, fight_id):
     url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post?t={int(time.time())}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -102,8 +102,9 @@ def get_fight_stats(event_id, fight_id):
     body_text = soup.get_text()
     finished = any(w in body_text for w in ["Win", "Loss", "Draw", "KO/TKO", "Submission", "Decision"])
 
-    # Имена бойцов
+    # Имена бойцов из JSON
     names = []
+    photos = []
     try:
         json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
         if json_script and json_script.string:
@@ -115,30 +116,23 @@ def get_fight_stats(event_id, fight_id):
                     family = athlete.get("name_family", "")
                     full_name = f"{given} {family}".strip() or "Unknown"
                     names.append(full_name)
+                    img_url = athlete.get("img", "")
+                    img_sml = athlete.get("img_sml_screens", "")
+                    if not img_url.startswith("http"):
+                        img_url = ""
+                    if not img_sml.startswith("http"):
+                        img_sml = ""
+                    photos.append((img_url, img_sml))
     except:
         pass
     while len(names) < 2:
         names.append("Red Corner" if len(names) == 0 else "Blue Corner")
-
-    # Фото
-    photos = []
-    try:
-        if 'data' in locals():
-            athletes = data.get("matchup", {}).get("athletes", [])
-            for athlete in athletes[:2]:
-                img_url = athlete.get("img", "")
-                if img_url and img_url.startswith("http"):
-                    photos.append(img_url)
-                else:
-                    photos.append(None)
-    except:
-        pass
     while len(photos) < 2:
-        photos.append(None)
+        photos.append(("", ""))
 
-    # Раунды (через табы)
-    round_data = []
+    # Собираем раунды, проходя по табам и соответствующим панелям
     tab_buttons = soup.select("button.c-tabs__nav-btn")
+    round_data = []
     for btn in tab_buttons:
         round_title = btn.get_text(strip=True)
         if round_title == "Full Fight":
@@ -331,7 +325,6 @@ def generate_image(data):
 
 # ---------- Основная логика ----------
 def main():
-    # Проверяем, не изменился ли EVENT_URL
     if os.path.exists(FIGHT_IDS_FILE):
         with open(FIGHT_IDS_FILE, 'r') as f:
             old_data = json.load(f)
