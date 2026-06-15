@@ -5,14 +5,12 @@ import json
 import re
 
 # ---------- Настройки ----------
-EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-freedom-250")
+# Укажите новый URL турнира
+EVENT_URL = os.environ.get("EVENT_URL", "https://www.ufc.com/event/ufc-fight-night-june-20-2026")
 MANUAL_EVENT_ID = os.environ.get("EVENT_ID", None)
-
-DEFAULT_CLOUDFRONT_DOMAIN = "d29dxerjsp82wz.cloudfront.net"
 
 # ---------- 1. Определение CloudFront домена ----------
 def find_cloudfront_domain():
-    # Пробуем найти в скриптах страницы события
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(EVENT_URL, headers=headers, timeout=15)
@@ -22,8 +20,8 @@ def find_cloudfront_domain():
                 match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
                 if match:
                     return match.group(1).replace('https://', '')
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка при поиске домена: {e}")
     return DEFAULT_CLOUDFRONT_DOMAIN
 
 # ---------- 2. Получение Event ID ----------
@@ -42,8 +40,8 @@ def find_event_id(domain):
                 match = re.search(r'"eventId"\s*:\s*"?(\d+)"?', script.string)
                 if match:
                     return int(match.group(1))
-    except:
-        pass
+    except Exception as e:
+        print(f"Ошибка при поиске eventId на странице: {e}")
 
     # Пробуем через API предстоящих событий
     try:
