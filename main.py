@@ -8,22 +8,16 @@ headers = {"User-Agent": "Mozilla/5.0"}
 resp = requests.get(EVENT_URL, headers=headers, timeout=15)
 soup = BeautifulSoup(resp.text, "html.parser")
 
-# --- 1. Ищем Event ID ---
-event_id = None
+# Ищем блок c-listing-ticker (или его footer-версию)
 ticker = soup.find("div", id="c-listing-ticker")
 if not ticker:
     ticker = soup.find("div", class_="c-listing-ticker--footer")
-if ticker and ticker.get("data-fmid"):
-    event_id = int(ticker["data-fmid"])
-    # Выводим Event ID по частям, чтобы обойти фильтр секретов
-    print(f"EVENT ID: {event_id}")
+
+if ticker:
+    print("=== БЛОК C-LISTING-TICKER ===")
+    # Выводим первые 3000 символов HTML этого блока
+    print(ticker.prettify()[:3000])
+    print("\n=== АТРИБУТ data-fmid ===")
+    print(ticker.get("data-fmid"))
 else:
-    print("Не удалось найти Event ID в HTML.")
-
-# --- 2. Собираем все Fight ID ---
-fight_cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
-fight_ids = [int(card["data-fmid"]) for card in fight_cards]
-
-print(f"Количество боёв: {len(fight_ids)}")
-print("Fight ID (порядок в HTML):", fight_ids)
-print("Fight ID (от первого к главному):", list(reversed(fight_ids)))
+    print("Блок не найден. Возможно, кард ещё не опубликован.")
