@@ -7,10 +7,15 @@ url = f"https://d29dxerjsp82wz.cloudfront.net/api/v3/fight/live/{FIGHT_ID}.json?
 headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
 
 resp = requests.get(url, headers=headers, timeout=15)
-print(f"Статус: {resp.status_code}")
-if resp.status_code == 200:
-    data = resp.json()
-    # Выведем первые 3000 символов JSON, чтобы увидеть структуру
-    print(json.dumps(data, indent=2)[:3000])
-else:
-    print(f"Ошибка: {resp.text[:500]}")
+data = resp.json()
+
+# Выведем ключи LiveFightDetail
+lf = data.get("LiveFightDetail", {})
+print("=== Ключи LiveFightDetail ===")
+print(list(lf.keys()))
+
+# Ищем, где могут быть раунды
+for key in lf:
+    if "round" in key.lower() or "stat" in key.lower() or "strike" in key.lower():
+        print(f"\n=== Поле '{key}' ===")
+        print(json.dumps(lf[key], indent=2)[:2000])
