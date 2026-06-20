@@ -47,7 +47,6 @@ def fetch_ids_from_html():
     resp = requests.get(EVENT_URL, headers=headers, timeout=15)
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Event ID
     ticker = soup.find("div", id="c-listing-ticker")
     if not ticker:
         ticker = soup.find("div", class_="c-listing-ticker--footer")
@@ -55,7 +54,6 @@ def fetch_ids_from_html():
         raise Exception("Event ID не найден – возможно, кард ещё не опубликован.")
     event_id = int(ticker["data-fmid"])
 
-    # Fight IDs (порядок в DOM: от первого боя к главному)
     fight_cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
     fight_ids = [int(card["data-fmid"]) for card in fight_cards]
 
@@ -117,7 +115,7 @@ def fetch_fight_api(fight_id):
         print(f"Ошибка Fight API для {fight_id}: {e}")
         return None
 
-# ---------- Статистика боя (возвращает статус) ----------
+# ---------- Статистика боя (исправлена) ----------
 def get_fight_stats(fight_id):
     data = fetch_fight_api(fight_id)
     if not data:
@@ -126,9 +124,9 @@ def get_fight_stats(fight_id):
     lf = data.get("LiveFightDetail", {})
     status = lf.get("Status", "")
 
-    # Если бой ещё не начался
-    if status == "Upcoming" or not lf.get("OfficialStats"):
-        return {"not_started": True, "status": status}
+    # Если бой ещё не начался (Upcoming)
+    if status == "Upcoming":
+        return {"not_started": True}
 
     fighters = lf.get("Fighters", [])
     names = []
@@ -162,50 +160,70 @@ def get_fight_stats(fight_id):
     except:
         pass
 
+    # Сначала пробуем получить раунды
     round_stats_all = lf.get("RoundStats", [])
-    if len(round_stats_all) < 1:
-        return {"not_started": True, "status": status, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
+    if round_stats_all:
+        red_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[0].get("Rounds", [])}
+        blue_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[1].get("Rounds", [])} if len(round_stats_all) > 1 else {}
+        max_round = max(max(red_rounds.keys()) if red_rounds else 0, max(blue_rounds.keys()) if blue_rounds else 0)
+        round_list = []
+        for rnum in range(1, max_round + 1):
+            red = red_rounds.get(rnum, {})
+            blue = blue_rounds.get(rnum, {})
+            total_s = (red.get("TotalStrikesLanded", 0), blue.get("TotalStrikesLanded", 0))
+            sig_s = (red.get("SigStrikesLanded", 0), blue.get("SigStrikesLanded", 0))
+            takedowns = (red.get("TakedownsLanded", 0), blue.get("TakedownsLanded", 0))
+            knockdowns = (red.get("Knockdowns", 0), blue.get("Knockdowns", 0))
+            if sum(total_s) == 0 and sum(sig_s) == 0:
+                continue
+            round_list.append({
+                "title": f"Round {rnum}",
+                "Total Strikes": ((total_s[0], 0, ""), (total_s[1], 0, "")),
+                "Sig. Strikes": ((sig_s[0], 0, ""), (sig_s[1], 0, "")),
+                "Takedowns": ((takedowns[0], 0, ""), (takedowns[1], 0, "")),
+                "Knockdowns": ((knockdowns[0], 0, ""), (knockdowns[1], 0, ""))
+            })
+        if round_list:
+            return {
+                "not_started": False,
+                "status": status,
+                "names": names,
+                "photos": photos,
+                "winner_idx": winner_idx,
+                "rounds": round_list,
+                "finished": status == "Final",
+                "result_str": result_str
+            }
 
-    red_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[0].get("Rounds", [])}
-    blue_rounds = {}
-    if len(round_stats_all) >= 2:
-        blue_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[1].get("Rounds", [])}
-
-    max_round = max(max(red_rounds.keys()) if red_rounds else 0, max(blue_rounds.keys()) if blue_rounds else 0)
-    if max_round == 0:
-        return {"not_started": True, "status": status, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
-
-    round_list = []
-    for rnum in range(1, max_round + 1):
-        red = red_rounds.get(rnum, {})
-        blue = blue_rounds.get(rnum, {})
-        if (red.get("TotalStrikesLanded", 0) == 0 and blue.get("TotalStrikesLanded", 0) == 0 and
-            red.get("SigStrikesLanded", 0) == 0 and blue.get("SigStrikesLanded", 0) == 0):
-            continue
-
+    # Если раундов нет, но есть FightStats – показываем общую статистику
+    fight_stats = lf.get("FightStats", [])
+    if fight_stats:
+        red = fight_stats[0] if len(fight_stats) > 0 else {}
+        blue = fight_stats[1] if len(fight_stats) > 1 else {}
         total_s = (red.get("TotalStrikesLanded", 0), blue.get("TotalStrikesLanded", 0))
         sig_s = (red.get("SigStrikesLanded", 0), blue.get("SigStrikesLanded", 0))
         takedowns = (red.get("TakedownsLanded", 0), blue.get("TakedownsLanded", 0))
         knockdowns = (red.get("Knockdowns", 0), blue.get("Knockdowns", 0))
-
-        round_list.append({
-            "title": f"Round {rnum}",
+        round_list = [{
+            "title": "Live Stats",
             "Total Strikes": ((total_s[0], 0, ""), (total_s[1], 0, "")),
             "Sig. Strikes": ((sig_s[0], 0, ""), (sig_s[1], 0, "")),
             "Takedowns": ((takedowns[0], 0, ""), (takedowns[1], 0, "")),
             "Knockdowns": ((knockdowns[0], 0, ""), (knockdowns[1], 0, ""))
-        })
+        }]
+        return {
+            "not_started": False,
+            "status": status,
+            "names": names,
+            "photos": photos,
+            "winner_idx": winner_idx,
+            "rounds": round_list,
+            "finished": status == "Final",
+            "result_str": result_str
+        }
 
-    return {
-        "not_started": False,
-        "status": status,
-        "names": names,
-        "photos": photos,
-        "winner_idx": winner_idx,
-        "rounds": round_list,
-        "finished": status == "Final",
-        "result_str": result_str
-    }
+    # Если вообще ничего нет – ждём
+    return {"not_started": True}
 
 # ---------- Генерация картинки (без изменений) ----------
 def generate_image(data):
@@ -269,10 +287,7 @@ def generate_image(data):
 
     max_vals = {}
     for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
-        vals = []
-        for rd in rounds:
-            (v1, _, _), (v2, _, _) = rd.get(m, ((0,0,""),(0,0,"")))
-            vals.extend([v1, v2])
+        vals = [v for rd in rounds for v in (rd[m][0][0], rd[m][1][0])]
         max_vals[m] = max(vals) if vals else 1
 
     img_w = 760
@@ -403,8 +418,7 @@ def main():
 
     img_bytes = generate_image(data)
 
-    # Логика в зависимости от статуса
-    if data.get("finished"):   # Final
+    if data.get("finished"):
         if os.path.exists(MSG_ID_FILE):
             with open(MSG_ID_FILE, "r") as f:
                 msg_id = int(f.read().strip())
@@ -412,7 +426,6 @@ def main():
             print(f"Сообщение {msg_id} обновлено (финальный результат).")
             os.remove(MSG_ID_FILE)
         else:
-            # На случай, если бой сразу завершился без создания сообщения
             result = send_photo(img_bytes, caption="")
             if result.get("ok"):
                 msg_id = result["result"]["message_id"]
@@ -421,7 +434,7 @@ def main():
         with open(CURRENT_INDEX_FILE, 'w') as f:
             f.write(str(current_index))
         print(f"Бой завершён. Обновлён current_index: {current_index}")
-    else:   # Live – бой идёт, обновляем или создаём сообщение
+    else:   # Live
         if os.path.exists(MSG_ID_FILE):
             with open(MSG_ID_FILE, "r") as f:
                 msg_id = int(f.read().strip())
