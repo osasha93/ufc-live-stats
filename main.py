@@ -63,7 +63,6 @@ def fetch_ids_from_html():
 
 # ---------- CloudFront домен ----------
 def get_cloudfront_domain():
-    # Если файл существует и URL турнира не изменился, читаем из файла
     if os.path.exists(DOMAIN_FILE):
         with open(DOMAIN_FILE, 'r') as f:
             domain = f.read().strip()
@@ -71,7 +70,6 @@ def get_cloudfront_domain():
                 print(f"Используем сохранённый домен: {domain}")
                 return domain
 
-    # Пробуем найти через редирект известного боя
     try:
         test_url = "https://www.ufc.com/matchup/0/12711/post"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -88,7 +86,6 @@ def get_cloudfront_domain():
     except Exception as e:
         print(f"Ошибка редиректа: {e}")
 
-    # Ищем на странице события
     try:
         resp = requests.get(EVENT_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -109,17 +106,6 @@ def get_cloudfront_domain():
 CLOUDFRONT_DOMAIN = get_cloudfront_domain()
 
 # ---------- API-запросы ----------
-def fetch_event_api(event_id):
-    url = f"https://{CLOUDFRONT_DOMAIN}/api/v3/event/live/{event_id}.json"
-    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"Ошибка Event API: {e}")
-        return None
-
 def fetch_fight_api(fight_id):
     url = f"https://{CLOUDFRONT_DOMAIN}/api/v3/fight/live/{fight_id}.json"
     headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
@@ -131,24 +117,18 @@ def fetch_fight_api(fight_id):
         print(f"Ошибка Fight API для {fight_id}: {e}")
         return None
 
-# ---------- Статусы боёв ----------
-def fetch_fight_statuses(event_id, fight_ids):
-    data = fetch_event_api(event_id)
-    if not data:
-        return None
-    api_fights = data.get("LiveEventDetail", {}).get("FightCard", [])
-    status_map = {f["FightId"]: f.get("Status", "Unknown") for f in api_fights if "FightId" in f}
-    return [status_map.get(fid, "Unknown") for fid in fight_ids]
-
-# ---------- Статистика боя ----------
+# ---------- Статистика боя (возвращает статус) ----------
 def get_fight_stats(fight_id):
     data = fetch_fight_api(fight_id)
     if not data:
         return None
 
     lf = data.get("LiveFightDetail", {})
-    if not lf.get("OfficialStats"):
-        return {"not_started": True}
+    status = lf.get("Status", "")
+
+    # Если бой ещё не начался
+    if status == "Upcoming" or not lf.get("OfficialStats"):
+        return {"not_started": True, "status": status}
 
     fighters = lf.get("Fighters", [])
     names = []
@@ -184,7 +164,7 @@ def get_fight_stats(fight_id):
 
     round_stats_all = lf.get("RoundStats", [])
     if len(round_stats_all) < 1:
-        return {"not_started": True, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
+        return {"not_started": True, "status": status, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
 
     red_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[0].get("Rounds", [])}
     blue_rounds = {}
@@ -193,7 +173,7 @@ def get_fight_stats(fight_id):
 
     max_round = max(max(red_rounds.keys()) if red_rounds else 0, max(blue_rounds.keys()) if blue_rounds else 0)
     if max_round == 0:
-        return {"not_started": True, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
+        return {"not_started": True, "status": status, "names": names, "photos": photos, "winner_idx": winner_idx, "result_str": result_str}
 
     round_list = []
     for rnum in range(1, max_round + 1):
@@ -216,19 +196,18 @@ def get_fight_stats(fight_id):
             "Knockdowns": ((knockdowns[0], 0, ""), (knockdowns[1], 0, ""))
         })
 
-    finished = lf.get("Status") == "Final"
-
     return {
-        "not_started": len(round_list) == 0,
+        "not_started": False,
+        "status": status,
         "names": names,
         "photos": photos,
         "winner_idx": winner_idx,
         "rounds": round_list,
-        "finished": finished,
+        "finished": status == "Final",
         "result_str": result_str
     }
 
-# ---------- Генерация картинки ----------
+# ---------- Генерация картинки (без изменений) ----------
 def generate_image(data):
     names = data["names"]
     photos = data["photos"]
@@ -380,11 +359,9 @@ def generate_image(data):
 # ---------- Основная логика ----------
 def main():
     global event_id
-    # Получаем Event ID и Fight ID из HTML
     event_id, fight_ids = fetch_ids_from_html()
     print(f"Event ID: {event_id}, боёв: {len(fight_ids)}")
 
-    # Если URL изменился, сбрасываем прогресс
     if os.path.exists(FIGHT_IDS_FILE):
         with open(FIGHT_IDS_FILE, 'r') as f:
             old_data = json.load(f)
@@ -399,14 +376,12 @@ def main():
             if os.path.exists(DOMAIN_FILE):
                 os.remove(DOMAIN_FILE)
 
-    # Загружаем или инициализируем индекс
     current_index = 0
     if os.path.exists(CURRENT_INDEX_FILE):
         with open(CURRENT_INDEX_FILE, 'r') as f:
             current_index = int(f.read().strip())
         print(f"Загружен current_index: {current_index}")
 
-    # Сохраняем список боёв
     with open(FIGHT_IDS_FILE, 'w') as f:
         json.dump({"event_url": EVENT_URL, "fights": fight_ids}, f)
 
@@ -414,64 +389,53 @@ def main():
         print("Все бои турнира обработаны.")
         return
 
-    # Получаем статусы боёв
-    statuses = fetch_fight_statuses(event_id, fight_ids)
-    if not statuses:
-        print("Не удалось получить статусы боёв.")
-        return
-
     current_fight_id = fight_ids[current_index]
-    current_status = statuses[current_index]
-
-    print(f"Обрабатываем бой {current_fight_id}, статус: {current_status}")
-
-    if current_status == "Upcoming":
-        print("Бой ещё не начался, ждём.")
-        return
+    print(f"Обрабатываем бой {current_fight_id}")
 
     data = get_fight_stats(current_fight_id)
     if not data:
         print("Не удалось получить данные боя.")
         return
 
-    if data.get("not_started") and current_status != "Final":
-        print("Статистика пока недоступна, ждём.")
+    if data.get("not_started"):
+        print("Бой ещё не начался, ждём.")
         return
 
     img_bytes = generate_image(data)
 
-    if current_status == "Live" and not os.path.exists(MSG_ID_FILE):
-        result = send_photo(img_bytes, caption="")
-        if result.get("ok"):
-            msg_id = result["result"]["message_id"]
-            with open(MSG_ID_FILE, "w") as f:
-                f.write(str(msg_id))
-            print(f"Создано новое сообщение {msg_id} для live-трансляции.")
-        else:
-            print("Ошибка создания сообщения:", result)
-    elif current_status in ("Live", "Final") and os.path.exists(MSG_ID_FILE):
-        with open(MSG_ID_FILE, "r") as f:
-            msg_id = int(f.read().strip())
-        edit_message_media(msg_id, img_bytes, caption="")
-        print(f"Сообщение {msg_id} обновлено.")
-    else:
-        result = send_photo(img_bytes, caption="")
-        if result.get("ok"):
-            msg_id = result["result"]["message_id"]
-            with open(MSG_ID_FILE, "w") as f:
-                f.write(str(msg_id))
-            print(f"Новое сообщение {msg_id} создано.")
-        else:
-            print("Ошибка отправки:", result)
-            return
-
-    if current_status == "Final":
+    # Логика в зависимости от статуса
+    if data.get("finished"):   # Final
         if os.path.exists(MSG_ID_FILE):
+            with open(MSG_ID_FILE, "r") as f:
+                msg_id = int(f.read().strip())
+            edit_message_media(msg_id, img_bytes, caption="")
+            print(f"Сообщение {msg_id} обновлено (финальный результат).")
             os.remove(MSG_ID_FILE)
+        else:
+            # На случай, если бой сразу завершился без создания сообщения
+            result = send_photo(img_bytes, caption="")
+            if result.get("ok"):
+                msg_id = result["result"]["message_id"]
+                print(f"Создано финальное сообщение {msg_id}.")
         current_index += 1
         with open(CURRENT_INDEX_FILE, 'w') as f:
             f.write(str(current_index))
         print(f"Бой завершён. Обновлён current_index: {current_index}")
+    else:   # Live – бой идёт, обновляем или создаём сообщение
+        if os.path.exists(MSG_ID_FILE):
+            with open(MSG_ID_FILE, "r") as f:
+                msg_id = int(f.read().strip())
+            edit_message_media(msg_id, img_bytes, caption="")
+            print(f"Сообщение {msg_id} обновлено (live).")
+        else:
+            result = send_photo(img_bytes, caption="")
+            if result.get("ok"):
+                msg_id = result["result"]["message_id"]
+                with open(MSG_ID_FILE, "w") as f:
+                    f.write(str(msg_id))
+                print(f"Создано новое сообщение {msg_id} для live-трансляции.")
+            else:
+                print("Ошибка создания сообщения:", result)
 
 if __name__ == "__main__":
     main()
