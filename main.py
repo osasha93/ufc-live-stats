@@ -378,18 +378,17 @@ def main():
     print(f"Event ID: {event_id}, боёв: {len(fight_ids)}")
 
     if os.path.exists(FIGHT_IDS_FILE):
-        with open(FIGHT_IDS_FILE, 'r') as f:
-            old_data = json.load(f)
-        if isinstance(old_data, dict) and old_data.get("event_url") != EVENT_URL:
-            print("Обнаружен новый турнир! Сбрасываем прогресс.")
-            if os.path.exists(CURRENT_INDEX_FILE):
-                os.remove(CURRENT_INDEX_FILE)
-            if os.path.exists(FIGHT_IDS_FILE):
-                os.remove(FIGHT_IDS_FILE)
-            if os.path.exists(MSG_ID_FILE):
-                os.remove(MSG_ID_FILE)
-            if os.path.exists(DOMAIN_FILE):
-                os.remove(DOMAIN_FILE)
+    with open(FIGHT_IDS_FILE, 'r') as f:
+        old_data = json.load(f)
+    if isinstance(old_data, dict) and old_data.get("event_url") != EVENT_URL:
+        print("Обнаружен новый турнир! Сбрасываем прогресс.")
+        if os.path.exists(CURRENT_INDEX_FILE):
+            os.remove(CURRENT_INDEX_FILE)
+        if os.path.exists(FIGHT_IDS_FILE):
+            os.remove(FIGHT_IDS_FILE)
+        if os.path.exists(MSG_ID_FILE):
+            os.remove(MSG_ID_FILE)
+        # DOMAIN_FILE больше не удаляем
 
     current_index = 0
     if os.path.exists(CURRENT_INDEX_FILE):
