@@ -1,40 +1,84 @@
 name: Live Fight Stats
 
+# Расписание пишет tapology-bot между маркерами AUTO: на каждый турнир UFC — запуск в момент старта
+# и запасной через 20 мин (если GitHub пропустит первый; при занятом — встанет в очередь и сразу выйдет).
+# Турнир идёт до 7 ч, а job в Actions живёт до 6 ч, поэтому в запуске два job подряд:
+# part2 продолжает с того места, где part1 упёрся в лимит. Без идущего турнира оба выходят за секунды.
+# Ручной запуск (Run workflow) тоже сам находит турнир, который идёт сейчас.
 on:
   workflow_dispatch:
+    inputs:
+      replay_fight:
+        description: "Проверка рендера: ID прошедшего боя (напр. 13046) — нарисовать без Telegram, картинки в Artifacts"
+        required: false
+        default: ""
+  schedule:
+    # BEGIN AUTO (tapology-bot)
+    - cron: '0 0 1 1 *'   # заглушка: турниров в schedule.json нет
+    # END AUTO
+
+concurrency:
+  group: live
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+
 jobs:
-  run:
+  part1:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+          ref: main
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run script
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
-          EVENT_URL: ${{ secrets.EVENT_URL }}
-          EVENT_ID: ${{ secrets.EVENT_ID }}
-        run: python main.py
-
-      - name: Commit and push state
-        if: success()
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Chromium for the card renderer
+        continue-on-error: true      # не поставился — бот рисует запасную карточку Pillow (render.py)
+        run: python -m playwright install --with-deps chromium
+      - name: Render check (replay without Telegram)
+        if: ${{ github.event.inputs.replay_fight != '' }}
+        run: python -u main.py --replay "${{ github.event.inputs.replay_fight }}" --dry-run --pause 0
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.replay_fight != '' }}
+        with:
+          name: render-check
+          path: out/*.png
+      - name: Live loop
+        if: ${{ github.event.inputs.replay_fight == '' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --staged --quiet || (git commit -m "Update state" && git push)
+          python -u main.py --auto
+
+  part2:
+    needs: part1
+    if: ${{ !cancelled() && github.event.inputs.replay_fight == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main          # свежее состояние (сообщения боёв), которое закоммитил part1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Chromium for the card renderer
+        continue-on-error: true      # не поставился — бот рисует запасную карточку Pillow (render.py)
+        run: python -m playwright install --with-deps chromium
+      - name: Live loop (continued)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python -u main.py --auto

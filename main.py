@@ -1,453 +1,271 @@
-import requests
-from bs4 import BeautifulSoup
+"""
+UFC LIVE → Telegram: статистика боёв турнира UFC в прямом эфире.
+На каждый бой — одна картинка: во время боя — статистика текущего раунда (обновление каждые 5 с),
+по окончании — общая статистика боя, метод победы и судьи; между боями проверка каждые 30 с.
+Турнир определяется сам (schedule.json от tapology-bot или ufc.com/events), ничего вручную не вводится.
+
+  python main.py --auto                     # как в GitHub Actions: идёт турнир — цикл до его конца, иначе выход
+  python main.py --auto --dry-run           # то же без Telegram: картинки в out/
+  python main.py --find                     # какой турнир бот определил бы сейчас
+  python main.py --replay 13046             # повтор боя 17.10 «как в эфире» в тестовую группу tapology-bot
+  python main.py --replay 13046 --dry-run   # то же в out/
+  python main.py --replay 13046 --pillow    # то же запасной картинкой (как если Chromium не поднялся)
+  python main.py --target prod              # в боевой чат (секреты из secret.Py этой папки)
+"""
+import argparse
 import os
-import json
+import sys
 import time
-import io
-import re
-from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime, timedelta, timezone
+from importlib.machinery import SourceFileLoader
 
-# ---------- Настройки ----------
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
+import fight
+import render
+import replay
+import state
+import ufc_api
+from tg import DryRunSender, TelegramSender
 
-EVENT_URL = os.environ.get("EVENT_URL", "")
+INTERVAL = timedelta(seconds=30)                 # между боями — ждём начала следующего
+LIVE_INTERVAL = timedelta(seconds=5)             # пока идёт бой — статистика раунда почти в реальном времени
+WINDOW_BEFORE = timedelta(minutes=30)            # турнир «идёт» с start − 30 мин…
+EVENT_HOURS = timedelta(hours=7)                 # …самые долгие турниры — до 7 ч (UFC 332: 6 ч 56 мин)
+WINDOW_AFTER = EVENT_HOURS + timedelta(hours=1)  # …до start + 8 ч (запас на задержки)
+JOB_BUDGET = timedelta(hours=5, minutes=40)      # лимит job в Actions — 6 ч; дальше продолжит part2 (live.yml)
+LIVE_GRACE = timedelta(minutes=12)               # идущий бой можно дотянуть сверх JOB_BUDGET (timeout job 355 мин)
+BUTTON_TEXT = "📊 Статистика на UFC.com"
+TAPOLOGY_SECRET = r"H:\СКРИПТЫ\tapology-bot\config\secret.py"
+OUT_DIR = os.path.join(state.HERE, "out")
+SKIP_STATUSES = ("Upcoming", "Canceled", "")
 
-CURRENT_INDEX_FILE = "current_index.txt"
-FIGHT_IDS_FILE = "fight_ids.json"
-MSG_ID_FILE = "live_message_id.txt"
-DOMAIN_FILE = "cloudfront_domain.txt"
 
-# ---------- Telegram API ----------
-def send_photo(photo_bytes, caption=""):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    files = {"photo": ("stats.png", photo_bytes, "image/png")}
-    data = {"chat_id": CHAT_ID, "caption": caption}
-    if THREAD_ID:
-        data["message_thread_id"] = int(THREAD_ID)
-    return requests.post(url, data=data, files=files).json()
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
-def edit_message_media(message_id, photo_bytes, caption=""):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageMedia"
-    media = {"type": "photo", "media": "attach://photo", "caption": caption}
-    files = {"photo": ("stats.png", photo_bytes, "image/png")}
-    data = {
-        "chat_id": CHAT_ID,
-        "message_id": message_id,
-        "media": json.dumps(media)
-    }
-    if THREAD_ID:
-        data["message_thread_id"] = int(THREAD_ID)
-    return requests.post(url, data=data, files=files).json()
 
-# ---------- Извлечение ID из HTML ----------
-def fetch_ids_from_html():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(EVENT_URL, headers=headers, timeout=15)
-    soup = BeautifulSoup(resp.text, "html.parser")
+def telegram_target(target: str) -> tuple[str, str, str | None]:
+    """В Actions — из переменных окружения. Локально: test — тестовая группа tapology-bot, prod — secret.Py."""
+    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+        return (os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"],
+                os.environ.get("TELEGRAM_THREAD_ID") or None)
+    path = TAPOLOGY_SECRET if target == "test" else os.path.join(state.HERE, "secret.Py")
+    if not os.path.exists(path):
+        raise RuntimeError(f"Нет файла с секретами для --target {target}: {path}")
+    secret = SourceFileLoader(f"secret_{target}", path).load_module()
+    token, chat = getattr(secret, "BOT_TOKEN", ""), getattr(secret, "CHAT_ID", "")
+    if not token or not chat:
+        raise RuntimeError(f"В {path} не заполнены BOT_TOKEN / CHAT_ID")
+    return token, str(chat), getattr(secret, "THREAD_ID", None) or None
 
-    ticker = soup.find("div", id="c-listing-ticker")
-    if not ticker:
-        ticker = soup.find("div", class_="c-listing-ticker--footer")
-    if not ticker or not ticker.get("data-fmid"):
-        raise Exception("Event ID не найден – возможно, кард ещё не опубликован.")
-    event_id = int(ticker["data-fmid"])
 
-    fight_cards = soup.select("div.c-listing-ticker-fightcard[data-fmid]")
-    fight_ids = [int(card["data-fmid"]) for card in fight_cards]
+# ---------- Один проход по турниру ----------
+class Tracker:
+    """Шлёт/правит картинки боёв турнира. fights — состояние {ID боя: {"msg", "digest", "final"}}."""
 
-    return event_id, fight_ids
+    def __init__(self, sender, event_id: int, fights: dict,
+                 get_event=ufc_api.get_event, get_fight=ufc_api.get_fight,
+                 get_photos=ufc_api.fighter_photos, draw=render.render):
+        self.sender, self.event_id, self.fights = sender, event_id, fights
+        self.get_event, self.get_fight, self.get_photos, self.draw = get_event, get_fight, get_photos, draw
+        self.photos: dict[str, list] = {}
+        self.event_name = ""
 
-# ---------- CloudFront домен ----------
-def get_cloudfront_domain():
-    if os.path.exists(DOMAIN_FILE):
-        with open(DOMAIN_FILE, 'r') as f:
-            domain = f.read().strip()
-            if domain:
-                print(f"Используем сохранённый домен: {domain}")
-                return domain
-
-    try:
-        test_url = "https://www.ufc.com/matchup/0/12711/post"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(test_url, headers=headers, allow_redirects=False, timeout=15)
-        if resp.status_code in (301, 302) and "Location" in resp.headers:
-            location = resp.headers["Location"]
-            match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', location)
-            if match:
-                domain = match.group(1).replace('https://', '')
-                with open(DOMAIN_FILE, 'w') as f:
-                    f.write(domain)
-                print(f"Найден домен через редирект: {domain}")
-                return domain
-    except Exception as e:
-        print(f"Ошибка редиректа: {e}")
-
-    try:
-        resp = requests.get(EVENT_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for script in soup.find_all('script'):
-            if script.string and 'cloudfront' in script.string:
-                match = re.search(r'(https?://[a-zA-Z0-9.-]+\.cloudfront\.net)', script.string)
-                if match:
-                    domain = match.group(1).replace('https://', '')
-                    with open(DOMAIN_FILE, 'w') as f:
-                        f.write(domain)
-                    print(f"Найден домен на странице: {domain}")
-                    return domain
-    except:
-        pass
-
-    raise Exception("Не удалось определить CloudFront домен. Создайте файл cloudfront_domain.txt с актуальным доменом (например, d29dxerjsp82wz.cloudfront.net).")
-
-CLOUDFRONT_DOMAIN = get_cloudfront_domain()
-
-# ---------- API-запросы ----------
-def fetch_fight_api(fight_id):
-    url = f"https://{CLOUDFRONT_DOMAIN}/api/v3/fight/live/{fight_id}.json"
-    headers = {"User-Agent": "Mozilla/5.0", "Origin": "https://www.ufc.com", "Referer": "https://www.ufc.com/"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        print(f"Ошибка Fight API для {fight_id}: {e}")
-        return None
-
-# ---------- Статистика боя (исправлена) ----------
-def get_fight_stats(fight_id):
-    data = fetch_fight_api(fight_id)
-    if not data:
-        return None
-
-    lf = data.get("LiveFightDetail", {})
-    status = lf.get("Status", "")
-
-    # Если бой ещё не начался (Upcoming)
-    if status == "Upcoming":
-        return {"not_started": True}
-
-    fighters = lf.get("Fighters", [])
-    names = []
-    winner_idx = -1
-    for i, f in enumerate(fighters[:2]):
-        name = f"{f.get('Name', {}).get('FirstName', '')} {f.get('Name', {}).get('LastName', '')}".strip()
-        names.append(name or "Unknown")
-        if f.get("Outcome", {}).get("Outcome") == "Win":
-            winner_idx = i
-
-    result = lf.get("Result", {})
-    method = result.get("Method", "")
-    ending_round = result.get("EndingRound", "")
-    ending_time = result.get("EndingTime", "")
-    result_str = f"{method} (R{ending_round} {ending_time})" if method and ending_round else ""
-
-    # Фото
-    photos = [None, None]
-    try:
-        page_url = f"https://www.ufc.com/matchup/{event_id}/{fight_id}/post"
-        page_resp = requests.get(page_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(page_resp.text, "html.parser")
-        json_script = soup.find("script", {"data-drupal-selector": "drupal-settings-json"})
-        if json_script and json_script.string:
-            page_data = json.loads(json_script.string)
-            athletes = page_data.get("matchup", {}).get("athletes", [])
-            for i, athlete in enumerate(athletes[:2]):
-                img = athlete.get("img", "")
-                if img and img.startswith("http"):
-                    photos[i] = img
-    except:
-        pass
-
-    # Сначала пробуем получить раунды
-    round_stats_all = lf.get("RoundStats", [])
-    if round_stats_all:
-        red_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[0].get("Rounds", [])}
-        blue_rounds = {rd["RoundNumber"]: rd for rd in round_stats_all[1].get("Rounds", [])} if len(round_stats_all) > 1 else {}
-        max_round = max(max(red_rounds.keys()) if red_rounds else 0, max(blue_rounds.keys()) if blue_rounds else 0)
-        round_list = []
-        for rnum in range(1, max_round + 1):
-            red = red_rounds.get(rnum, {})
-            blue = blue_rounds.get(rnum, {})
-            total_s = (red.get("TotalStrikesLanded", 0), blue.get("TotalStrikesLanded", 0))
-            sig_s = (red.get("SigStrikesLanded", 0), blue.get("SigStrikesLanded", 0))
-            takedowns = (red.get("TakedownsLanded", 0), blue.get("TakedownsLanded", 0))
-            knockdowns = (red.get("Knockdowns", 0), blue.get("Knockdowns", 0))
-            if sum(total_s) == 0 and sum(sig_s) == 0:
+    def tick(self) -> tuple[bool, bool, bool]:
+        """(турнир закончился и все итоги отправлены, изменилось состояние для сохранения,
+        сейчас идёт бой — итог которого ещё не отправлен → проверять чаще)."""
+        ev = self.get_event(self.event_id)
+        if not ev:
+            return False, False, False
+        self.event_name = ev.get("Name") or self.event_name
+        live_id, live_round = ev.get("LiveFightId"), ev.get("LiveRoundNumber")
+        changed = False
+        # ранние прелимы идут первыми — у них самый большой FightOrder
+        for card in sorted(ev.get("FightCard", []), key=lambda f: -(f.get("FightOrder") or 0)):
+            fid = card["FightId"]
+            st = self.fights.get(str(fid), {})
+            if st.get("final") or (card.get("Status") in SKIP_STATUSES and fid != live_id):
                 continue
-            round_list.append({
-                "title": f"Round {rnum}",
-                "Total Strikes": ((total_s[0], 0, ""), (total_s[1], 0, "")),
-                "Sig. Strikes": ((sig_s[0], 0, ""), (sig_s[1], 0, "")),
-                "Takedowns": ((takedowns[0], 0, ""), (takedowns[1], 0, "")),
-                "Knockdowns": ((knockdowns[0], 0, ""), (knockdowns[1], 0, ""))
-            })
-        if round_list:
-            return {
-                "not_started": False,
-                "status": status,
-                "names": names,
-                "photos": photos,
-                "winner_idx": winner_idx,
-                "rounds": round_list,
-                "finished": status == "Final",
-                "result_str": result_str
-            }
+            changed |= self._update(fid, live_round if fid == live_id else None)
+        cards = ev.get("FightCard", [])
+        live = any(not self.fights.get(str(f["FightId"]), {}).get("final")
+                   and (f["FightId"] == live_id or f.get("Status") not in SKIP_STATUSES + ("Final",))
+                   for f in cards)
+        done = ev.get("Status") == "Final" and all(
+            self.fights.get(str(f["FightId"]), {}).get("final") or f.get("Status") == "Canceled" for f in cards)
+        return done, changed, live
 
-    # Если раундов нет, но есть FightStats – показываем общую статистику
-    fight_stats = lf.get("FightStats", [])
-    if fight_stats:
-        red = fight_stats[0] if len(fight_stats) > 0 else {}
-        blue = fight_stats[1] if len(fight_stats) > 1 else {}
-        total_s = (red.get("TotalStrikesLanded", 0), blue.get("TotalStrikesLanded", 0))
-        sig_s = (red.get("SigStrikesLanded", 0), blue.get("SigStrikesLanded", 0))
-        takedowns = (red.get("TakedownsLanded", 0), blue.get("TakedownsLanded", 0))
-        knockdowns = (red.get("Knockdowns", 0), blue.get("Knockdowns", 0))
-        round_list = [{
-            "title": "Live Stats",
-            "Total Strikes": ((total_s[0], 0, ""), (total_s[1], 0, "")),
-            "Sig. Strikes": ((sig_s[0], 0, ""), (sig_s[1], 0, "")),
-            "Takedowns": ((takedowns[0], 0, ""), (takedowns[1], 0, "")),
-            "Knockdowns": ((knockdowns[0], 0, ""), (knockdowns[1], 0, ""))
-        }]
-        return {
-            "not_started": False,
-            "status": status,
-            "names": names,
-            "photos": photos,
-            "winner_idx": winner_idx,
-            "rounds": round_list,
-            "finished": status == "Final",
-            "result_str": result_str
-        }
+    def _update(self, fid: int, live_round: int | None) -> bool:
+        lf = self.get_fight(fid)
+        if not lf:
+            return False
+        view = fight.parse_fight(lf, live_round)
+        if not view.finished and not fight.has_stats(view):
+            return False                              # бой открыт, но ещё ни одного действия — ждём
+        st = self.fights.setdefault(str(fid), {})
+        digest = view.digest()
+        if digest == st.get("digest"):
+            return False                              # цифры те же — Telegram не трогаем
+        if str(fid) not in self.photos:
+            self.photos[str(fid)] = self.get_photos(self.event_id, fid)
+        png = self.draw(view, self.event_name, self.photos[str(fid)])
+        caption = fight.caption(view, self.event_name)
+        button = (BUTTON_TEXT, ufc_api.matchup_url(self.event_id, fid))
+        new_message = False
+        ok = self.sender.edit(st["msg"], png, caption, button) if st.get("msg") else None
+        if ok is None:                                # сообщения ещё нет или его удалили
+            msg = self.sender.send(png, caption, button)
+            if not msg:
+                return False
+            st["msg"], new_message = msg, True
+        elif not ok:
+            return False
+        st["digest"] = digest
+        if view.finished:
+            st["final"] = True
+        print(f"{'🆕' if new_message else '✏️'} {view.title}: {'итог' if view.finished else f'раунд {live_round}'}")
+        return new_message or view.finished
 
-    # Если вообще ничего нет – ждём
-    return {"not_started": True}
 
-# ---------- Генерация картинки (без изменений) ----------
-def generate_image(data):
-    names = data["names"]
-    photos = data["photos"]
-    winner_idx = data.get("winner_idx", -1)
-    rounds = data["rounds"]
-    result_str = data.get("result_str", "")
+# ---------- Какой турнир сейчас ----------
+def scheduled_event(schedule: dict, live_state: dict, now: datetime) -> dict | None:
+    """Турнир из schedule.json, который идёт сейчас и ещё не отмечен завершённым."""
+    for ev in sorted(schedule.get("events", []), key=lambda e: e["start_utc"]):
+        start = ufc_api.parse_time(ev["start_utc"])
+        if ev["start_utc"] not in live_state.get("done", []) and \
+                start - WINDOW_BEFORE <= now <= start + WINDOW_AFTER:
+            return ev
+    return None
 
-    BG = (18, 22, 35)
-    TEXT = (220, 220, 220)
-    RED = (225, 65, 65)
-    BLUE = (65, 125, 225)
-    GOLD = (255, 210, 50)
-    GREEN = (80, 200, 80)
 
-    try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
-        font_name = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-        font_metric = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
-        font_number = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
-        font_initials = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
-    except:
-        font_title = font_name = font_metric = font_number = font_initials = ImageFont.load_default()
-
-    def load_photo(url):
-        if not url:
-            return None
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.ufc.com/",
-            "Accept": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8"
-        }
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                img.thumbnail((72, 72), Image.LANCZOS)
-                mask = Image.new("L", (72, 72), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, 72, 72), fill=255)
-                img.putalpha(mask)
-                return img
-        except:
-            pass
+def resolve_event(now: datetime, schedule: dict, live_state: dict,
+                  find=ufc_api.find_event_id, discover=ufc_api.discover_from_ufc_com,
+                  get_event=ufc_api.get_event) -> tuple[int, str] | None:
+    """(ID турнира в UFC API, ключ для done) или None. Сначала расписание tapology-bot, затем ufc.com/events."""
+    sched = scheduled_event(schedule, live_state, now)
+    if sched:
+        key = sched["start_utc"]
+        ids = live_state.setdefault("event_ids", {})
+        if key not in ids:
+            event_id = find(ufc_api.parse_time(key), live_state.get("last_event_id"))
+            if event_id is None:
+                print(f"UFC API: «{sched['title']}» пока не найден по времени старта, пробую ufc.com/events.")
+            else:
+                ids[key] = live_state["last_event_id"] = event_id
+        if key in ids:
+            return ids[key], key
+    event_id = discover(now)
+    ev = event_id and get_event(event_id)
+    if not ev:
         return None
+    key = ev["StartTime"]
+    start = ufc_api.parse_time(key)
+    if key in live_state.get("done", []) or not (start - WINDOW_BEFORE <= now <= start + WINDOW_AFTER):
+        return None
+    live_state["last_event_id"] = event_id
+    return event_id, key
 
-    def draw_initials(draw, xy, name, color):
-        x, y = xy
-        r = 36
-        draw.ellipse([x, y, x+72, y+72], fill=color)
-        initials = "".join([n[0].upper() for n in name.split() if n])[:2]
-        bbox = draw.textbbox((0,0), initials, font=font_initials)
-        w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        draw.text((x + 36 - w//2, y + 36 - h//2), initials, fill="white", font=font_initials)
 
-    photo1 = load_photo(photos[0])
-    photo2 = load_photo(photos[1])
+def run_auto(sender, save: bool = True, now=now_utc, sleep=time.sleep,
+             resolve=resolve_event, tracker_cls=Tracker) -> None:
+    live_state = state.load_json(state.STATE_FILE, {})
+    found = resolve(now(), state.load_json(state.SCHEDULE_FILE, {}), live_state)
+    if not found:
+        print("Сейчас турнира UFC нет — выхожу.")
+        return
+    event_id, key = found
+    deadline = now() + JOB_BUDGET
+    window_end = ufc_api.parse_time(key) + WINDOW_AFTER
+    fights = live_state.setdefault("fights", {}).setdefault(str(event_id), {})
+    tracker = tracker_cls(sender, event_id, fights)
+    print(f"🥊 Турнир ID {event_id} (старт {key}): проверка каждые {int(INTERVAL.total_seconds())} с, "
+          f"во время боя — каждые {int(LIVE_INTERVAL.total_seconds())} с")
+    was_live = False
+    while True:
+        done, changed, live = tracker.tick()
+        if live != was_live:
+            print(f"⏱ {'Бой идёт — обновление каждые 5 с' if live else 'Боя нет — проверка каждые 30 с'}")
+            was_live = live
+        interval = LIVE_INTERVAL if live else INTERVAL
+        done = done or now() >= window_end
+        if done:
+            live_state.setdefault("done", []).append(key)
+        if save and (changed or done):
+            state.save_json(state.STATE_FILE, live_state)
+            state.git_push(f"{'Done' if done else 'Live'}: {tracker.event_name or event_id}")
+        if done:
+            print("✅ Турнир закончился, итоги всех боёв отправлены — выхожу.")
+            return
+        # лимит job: между боями уходим сразу, а идущий бой дотягиваем (до +12 мин, job живёт 355 мин),
+        # чтобы передача part1 → part2 (1–2 мин на запуск) не пришлась на середину раунда
+        if now() + interval > deadline + (LIVE_GRACE if live else timedelta(0)):
+            if save:
+                state.save_json(state.STATE_FILE, live_state)
+                state.git_push(f"Pause: {tracker.event_name or event_id}")
+            print("⏸ Лимит времени job — продолжит следующий job.")
+            return
+        sleep(interval.total_seconds())
 
-    name1 = names[0] + (" WIN" if winner_idx == 0 and data.get("finished") else "")
-    name2 = names[1] + (" WIN" if winner_idx == 1 and data.get("finished") else "")
 
-    max_vals = {}
-    for m in ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]:
-        vals = [v for rd in rounds for v in (rd[m][0][0], rd[m][1][0])]
-        max_vals[m] = max(vals) if vals else 1
+def run_replay(sender, fight_id: int, event_id: int, pause: float) -> None:
+    """Повтор прошедшего боя «как в эфире»: снимок после каждого раунда, затем итог."""
+    event = ufc_api.get_event(event_id)
+    final = ufc_api.get_fight(fight_id)
+    if not event or not final:
+        print(f"❌ Нет данных UFC API для турнира {event_id} / боя {fight_id}")
+        sys.exit(1)
+    fights: dict = {}
+    photos = ufc_api.fighter_photos(event_id, fight_id)
+    shots = replay.snapshots(final)
+    for i, (lf, live_round) in enumerate(shots):
+        Tracker(sender, event_id, fights,
+                get_event=lambda _id, lf=lf, r=live_round: replay.fake_event(event, fight_id, lf, r),
+                get_fight=lambda _id, lf=lf: lf,
+                get_photos=lambda *_: photos).tick()
+        if i < len(shots) - 1:
+            time.sleep(pause)
 
-    img_w = 760
-    header_h = 120
-    metrics = ["Total Strikes", "Sig. Strikes", "Takedowns", "Knockdowns"]
-    row_h = 46
-    num_metrics = len(metrics)
-    num_rounds = len(rounds)
-    img_h = header_h + num_rounds * (num_metrics * row_h + 30) + 60
 
-    img = Image.new("RGB", (img_w, img_h), BG)
-    draw = ImageDraw.Draw(img)
-
-    y = 20
-    if photo1:
-        img.paste(photo1, (25, y), photo1)
-    else:
-        draw_initials(draw, (25, y), names[0], RED)
-    draw.text((110, y+28), name1, fill=RED, font=font_name)
-
-    if photo2:
-        img.paste(photo2, (img_w-97, y), photo2)
-    else:
-        draw_initials(draw, (img_w-97, y), names[1], BLUE)
-    name2_w = draw.textlength(name2, font=font_name)
-    draw.text((img_w - 110 - name2_w, y+28), name2, fill=BLUE, font=font_name)
-
-    draw.line([(20, y+85), (img_w-20, y+85)], fill=(100, 100, 130), width=2)
-    y = header_h
-    center_x = img_w // 2
-
-    for rd in rounds:
-        title = rd["title"]
-        draw.text((30, y), title, fill=GOLD, font=font_title)
-        y += 30
-        for m in metrics:
-            (v1, p1, a1_text), (v2, p2, a2_text) = rd.get(m, ((0,0,""),(0,0,"")))
-            max_m = max_vals[m] if max_vals[m] > 0 else 1
-            bar_max = 150
-            w1 = int((v1 / max_m) * bar_max) if v1 > 0 else 0
-            w2 = int((v2 / max_m) * bar_max) if v2 > 0 else 0
-
-            text_w = draw.textlength(m, font=font_metric)
-            draw.text((center_x - text_w//2, y), m, fill=TEXT, font=font_metric)
-
-            bar_y = y + 18
-            red_left = center_x - w1 - 5
-            draw.rectangle([(red_left, bar_y), (center_x - 5, bar_y + 10)], fill=RED)
-            if m == "Takedowns" and a1_text:
-                red_text = f"{v1} {a1_text} ({p1}%)" if p1 > 0 else f"{v1} {a1_text}"
-            else:
-                red_text = f"{v1} ({p1}%)" if p1 > 0 else str(v1)
-            rtext_w = draw.textlength(red_text, font=font_number)
-            draw.text((red_left - 5 - rtext_w, bar_y - 2), red_text, fill=RED, font=font_number)
-
-            blue_right = center_x + 5 + w2
-            draw.rectangle([(center_x + 5, bar_y), (blue_right, bar_y + 10)], fill=BLUE)
-            if m == "Takedowns" and a2_text:
-                blue_text = f"{v2} {a2_text} ({p2}%)" if p2 > 0 else f"{v2} {a2_text}"
-            else:
-                blue_text = f"{v2} ({p2}%)" if p2 > 0 else str(v2)
-            draw.text((blue_right + 5, bar_y - 2), blue_text, fill=BLUE, font=font_number)
-
-            y += row_h
-        y += 10
-
-    if result_str:
-        draw.text((30, y + 10), f"Result: {result_str}", fill=GREEN, font=font_title)
-        y += 30
-
-    if data.get("finished"):
-        status = "Fight Finished"
-        color = GREEN
-    else:
-        status = "LIVE"
-        color = RED
-    draw.text((30, y + 10), status, fill=color, font=font_title)
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-# ---------- Основная логика ----------
 def main():
-    global event_id
-    event_id, fight_ids = fetch_ids_from_html()
-    print(f"Event ID: {event_id}, боёв: {len(fight_ids)}")
+    p = argparse.ArgumentParser(description="UFC LIVE → Telegram")
+    p.add_argument("--auto", action="store_true", help="цикл по турниру, который идёт сейчас (GitHub Actions)")
+    p.add_argument("--find", action="store_true", help="показать, какой турнир определён, и выйти")
+    p.add_argument("--replay", type=int, metavar="FIGHT_ID", help="повтор прошедшего боя «как в эфире»")
+    p.add_argument("--event", type=int, default=1332, help="ID турнира для --replay (по умолчанию 17.10.2026)")
+    p.add_argument("--pause", type=float, default=5, help="пауза между снимками --replay, с")
+    p.add_argument("--dry-run", action="store_true", help="не отправлять, картинки в out/")
+    p.add_argument("--pillow", action="store_true", help="рисовать запасной вариант (как если Chromium не поднялся)")
+    p.add_argument("--target", choices=["test", "prod"], default="test",
+                   help="локально: test — тестовая группа tapology-bot (по умолчанию), prod — secret.Py")
+    args = p.parse_args()
 
-    if os.path.exists(FIGHT_IDS_FILE):
-        with open(FIGHT_IDS_FILE, 'r') as f:
-            old_data = json.load(f)
-        if isinstance(old_data, dict) and old_data.get("event_url") != EVENT_URL:
-            print("Обнаружен новый турнир! Сбрасываем прогресс.")
-            if os.path.exists(CURRENT_INDEX_FILE):
-                os.remove(CURRENT_INDEX_FILE)
-            if os.path.exists(FIGHT_IDS_FILE):
-                os.remove(FIGHT_IDS_FILE)
-            if os.path.exists(MSG_ID_FILE):
-                os.remove(MSG_ID_FILE)
-            # DOMAIN_FILE больше не удаляем
-
-    current_index = 0
-    if os.path.exists(CURRENT_INDEX_FILE):
-        with open(CURRENT_INDEX_FILE, 'r') as f:
-            current_index = int(f.read().strip())
-        print(f"Загружен current_index: {current_index}")
-
-    with open(FIGHT_IDS_FILE, 'w') as f:
-        json.dump({"event_url": EVENT_URL, "fights": fight_ids}, f)
-
-    if current_index >= len(fight_ids):
-        print("Все бои турнира обработаны.")
+    if args.find:
+        live_state = state.load_json(state.STATE_FILE, {})
+        found = resolve_event(now_utc(), state.load_json(state.SCHEDULE_FILE, {}), live_state)
+        nearest = ufc_api.discover_from_ufc_com(now_utc())
+        ev = nearest and ufc_api.get_event(nearest)
+        print(f"Идёт сейчас: {found or 'нет'}")
+        print(f"Ближайший по ufc.com/events: {nearest} {ev and ev['Name']} {ev and ev['StartTime']}")
         return
 
-    current_fight_id = fight_ids[current_index]
-    print(f"Обрабатываем бой {current_fight_id}")
+    if args.dry_run:
+        sender = DryRunSender(OUT_DIR)
+    else:
+        try:
+            sender = TelegramSender(*telegram_target(args.target))
+        except RuntimeError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+    print(f"🎯 {'GitHub Actions' if state.IN_ACTIONS else args.target}{' (dry-run)' if args.dry_run else ''}")
+    if args.pillow:
+        render._disabled = True
 
-    data = get_fight_stats(current_fight_id)
-    if not data:
-        print("Не удалось получить данные боя.")
-        return
+    if args.replay:
+        run_replay(sender, args.replay, args.event, args.pause)
+    elif args.auto:
+        run_auto(sender, save=not args.dry_run)
+    else:
+        p.print_help()
 
-    if data.get("not_started"):
-        print("Бой ещё не начался, ждём.")
-        return
-
-    img_bytes = generate_image(data)
-
-    if data.get("finished"):
-        if os.path.exists(MSG_ID_FILE):
-            with open(MSG_ID_FILE, "r") as f:
-                msg_id = int(f.read().strip())
-            edit_message_media(msg_id, img_bytes, caption="")
-            print(f"Сообщение {msg_id} обновлено (финальный результат).")
-            os.remove(MSG_ID_FILE)
-        else:
-            result = send_photo(img_bytes, caption="")
-            if result.get("ok"):
-                msg_id = result["result"]["message_id"]
-                print(f"Создано финальное сообщение {msg_id}.")
-        current_index += 1
-        with open(CURRENT_INDEX_FILE, 'w') as f:
-            f.write(str(current_index))
-        print(f"Бой завершён. Обновлён current_index: {current_index}")
-    else:   # Live
-        if os.path.exists(MSG_ID_FILE):
-            with open(MSG_ID_FILE, "r") as f:
-                msg_id = int(f.read().strip())
-            edit_message_media(msg_id, img_bytes, caption="")
-            print(f"Сообщение {msg_id} обновлено (live).")
-        else:
-            result = send_photo(img_bytes, caption="")
-            if result.get("ok"):
-                msg_id = result["result"]["message_id"]
-                with open(MSG_ID_FILE, "w") as f:
-                    f.write(str(msg_id))
-                print(f"Создано новое сообщение {msg_id} для live-трансляции.")
-            else:
-                print("Ошибка создания сообщения:", result)
 
 if __name__ == "__main__":
     main()
