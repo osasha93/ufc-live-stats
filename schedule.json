@@ -1,4 +1,10 @@
 {
-  "updated": null,
-  "events": []
+  "events": [
+    {
+      "title": "UFC 333: Volkanovski vs. Evloev",
+      "start_utc": "2026-10-24T14:00:00Z",
+      "url": "https://www.tapology.com/fightcenter/events/146338-ufc-333"
+    }
+  ],
+  "updated": "2026-10-23T11:58:44Z"
 }
