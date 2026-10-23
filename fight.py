@@ -37,7 +37,7 @@ class FightView:
     blue: Corner
     # Главный блок: во время боя — текущий раунд («РАУНД 2»), после боя — весь бой («СТАТИСТИКА БОЯ»)
     focus_title: str = ""
-    focus: list = field(default_factory=list)      # [(подпись, красный, синий, доля красного 0..1)]
+    focus: list = field(default_factory=list)      # [(подпись, красный, синий, доля красного 0..1 или None)]
     rounds: list = field(default_factory=list)     # [(номер, [(подпись, красный, синий)])]
     result: str = ""                               # "KO/TKO · R2 2:32 · Knee"
     judges: list = field(default_factory=list)     # [(судья, "29-28", "28-29")]
@@ -80,8 +80,9 @@ def _value(stats: dict, landed: str, attempted: str | None) -> tuple[str, float]
     return f"{got}/{tried}{pct}", float(got)
 
 
-def _share(a: float, b: float) -> float:
-    return 0.5 if a + b == 0 else a / (a + b)
+def _share(a: float, b: float) -> float | None:
+    """Доля красного 0..1; у обоих ноль (напр. тейкдауны 0/0 и 0/1) — None, полосок не рисуем."""
+    return None if a + b == 0 else a / (a + b)
 
 
 def _metric_rows(red: dict, blue: dict) -> list:

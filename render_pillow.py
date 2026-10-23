@@ -189,8 +189,8 @@ def render(view: FightView, event_name: str, photos=(None, None)) -> bytes:
             step = (area_bottom - area_top) / len(rows)
             half = (px1 - px0) // 2
             for i, (label, red, blue, share) in enumerate(rows):
-                both_zero = red in ("0", "0/0", "0:00") and blue in ("0", "0/0", "0:00")
-                biggest = max(share, 1 - share) or 1
+                both_zero = share is None                  # у обоих ноль — полосок нет
+                biggest = 1 if both_zero else max(share, 1 - share)
                 ry = area_top + step * i
                 if dense:                                   # одна линия: значение · полоска · подпись · полоска · значение
                     mid = ry + step / 2

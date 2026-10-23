@@ -175,10 +175,11 @@ def _fighter(corner, photo, side: str) -> str:
 def _stats(view: FightView) -> str:
     rows = []
     for label, red, blue, share in view.focus:
-        both_zero = red in ("0", "0/0", "0:00") and blue in ("0", "0/0", "0:00")
-        biggest = max(share, 1 - share) or 1
-        lw = 0 if both_zero else round(100 * share / biggest, 1)
-        rw = 0 if both_zero else round(100 * (1 - share) / biggest, 1)
+        if share is None:                                  # у обоих ноль — полосок нет
+            lw = rw = 0
+        else:
+            biggest = max(share, 1 - share)
+            lw, rw = round(100 * share / biggest, 1), round(100 * (1 - share) / biggest, 1)
         rows.append(f'<div class="stat"><div class="stat-top"><div class="v">{escape(red)}</div>'
                     f'<div class="label">{escape(label)}</div><div class="v r">{escape(blue)}</div></div>'
                     f'<div class="bar"><div class="l" style="width:{lw}%"></div><div></div>'

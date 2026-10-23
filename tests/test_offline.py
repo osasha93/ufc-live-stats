@@ -166,6 +166,18 @@ def test_card_html_live_and_final():
 
 
 @test
+def test_no_bars_when_both_landed_zero():
+    """Тейкдауны 0/0 против 0/1 — попаданий нет ни у кого, полосок быть не должно (было: обе полные)."""
+    import card
+    live = fight.parse_fight(replay.snapshots(DECISION)[2][0], live_round=2)
+    td = next(row for row in live.focus if row[0] == "Тейкдауны")
+    assert td[1] == "0/0" and td[2].startswith("0/") and td[3] is None
+    html = card._stats(live)
+    row = html[html.index("Тейкдауны"):]
+    assert 'class="l" style="width:0%"' in row[:400] and 'class="rt" style="width:0%"' in row[:400]
+
+
+@test
 def test_render_falls_back_to_pillow():
     old = render._get_page, render._disabled
     render._get_page = lambda: (_ for _ in ()).throw(RuntimeError("no chromium"))
