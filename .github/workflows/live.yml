@@ -14,7 +14,8 @@ on:
         default: ""
   schedule:
     # BEGIN AUTO (tapology-bot)
-    - cron: '0 0 1 1 *'   # заглушка: турниров в schedule.json нет
+    - cron: '0 14 24 10 *'   # UFC 333: Volkanovski vs. Evloev — старт
+    - cron: '20 14 24 10 *'   # UFC 333: Volkanovski vs. Evloev — запасной
     # END AUTO
 
 concurrency:
