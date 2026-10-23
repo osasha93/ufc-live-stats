@@ -43,6 +43,11 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      # Раннер каждый раз новый — Chromium (~150 МБ) берём из кэша GitHub, скачиваем только при смене версии Playwright.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('requirements.txt') }}
       # Без --with-deps: apt на раннере может висеть 10+ минут (было 23.10). Зависимости Chrome на ubuntu-latest уже есть;
       # не поставился за 4 мин — render.py возьмёт системный Google Chrome раннера, иначе запасную карточку Pillow.
       - name: Chromium for the card renderer
@@ -78,6 +83,10 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      - uses: actions/cache@v4       # тот же кэш Chromium, что в part1
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('requirements.txt') }}
       - name: Chromium for the card renderer
         continue-on-error: true      # см. part1: без apt, не дольше 4 мин, дальше системный Chrome / Pillow
         timeout-minutes: 4
