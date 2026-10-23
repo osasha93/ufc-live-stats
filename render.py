@@ -1,7 +1,8 @@
 """
 Картинка боя: HTML-карточка (card.py, скилл social-canvas) → PNG через Playwright/Chromium.
 Браузер запускается один раз и живёт весь цикл (обновление каждые 5 с — рендер ~0.3 с).
-Если Chromium недоступен или упал — запасной рисунок Pillow (render_pillow.py), чтобы бот не молчал.
+Порядок: Chromium от Playwright → системный Google Chrome → запасная карточка Pillow (render_pillow.py),
+чтобы бот не молчал.
 """
 import atexit
 
@@ -15,12 +16,22 @@ _playwright = None
 _disabled = False
 
 
+def _launch(pw):
+    """Chromium от Playwright, а если его нет — системный Google Chrome (на раннерах GitHub он установлен)."""
+    args = ["--font-render-hinting=none"]
+    try:
+        return pw.chromium.launch(args=args)
+    except Exception as e:
+        print(f"⚠️ Playwright Chromium не запустился ({type(e).__name__}) — пробую системный Google Chrome.")
+        return pw.chromium.launch(channel="chrome", args=args)
+
+
 def _get_page():
     global _browser, _page, _playwright
     if _page is None:
         from playwright.sync_api import sync_playwright
         _playwright = sync_playwright().start()
-        _browser = _playwright.chromium.launch(args=["--font-render-hinting=none"])
+        _browser = _launch(_playwright)
         _page = _browser.new_page(viewport={"width": card.W, "height": card.H}, device_scale_factor=1)
         atexit.register(close)
     return _page

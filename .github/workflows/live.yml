@@ -43,9 +43,12 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.txt
+      # Без --with-deps: apt на раннере может висеть 10+ минут (было 23.10). Зависимости Chrome на ubuntu-latest уже есть;
+      # не поставился за 4 мин — render.py возьмёт системный Google Chrome раннера, иначе запасную карточку Pillow.
       - name: Chromium for the card renderer
-        continue-on-error: true      # не поставился — бот рисует запасную карточку Pillow (render.py)
-        run: python -m playwright install --with-deps chromium
+        continue-on-error: true
+        timeout-minutes: 4
+        run: python -m playwright install chromium
       - name: Render check (replay without Telegram)
         if: ${{ github.event.inputs.replay_fight != '' }}
         run: python -u main.py --replay "${{ github.event.inputs.replay_fight }}" --dry-run --pause 0
@@ -76,8 +79,9 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Chromium for the card renderer
-        continue-on-error: true      # не поставился — бот рисует запасную карточку Pillow (render.py)
-        run: python -m playwright install --with-deps chromium
+        continue-on-error: true      # см. part1: без apt, не дольше 4 мин, дальше системный Chrome / Pillow
+        timeout-minutes: 4
+        run: python -m playwright install chromium
       - name: Live loop (continued)
         run: |
           git config user.name "github-actions[bot]"
