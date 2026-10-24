@@ -72,8 +72,12 @@
       },
       "13063": {
         "msg": 18191,
-        "digest": "74df6b003b34fbe7b954211b9de06bf2790e5851"
+        "digest": "dcd09e234d823b0b143194f1ef0b6a04dec9bf48",
+        "final": true
       }
     }
-  }
+  },
+  "done": [
+    "2026-10-24T14:00:00Z"
+  ]
 }
