@@ -3,6 +3,9 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 
+# Бой закончен: во время турнира API сразу ставит "Over" (UFC 333, 24.10), позже — "Final"
+FINISHED = ("Final", "Over")
+
 # (подпись, поле «попал», поле «пытался» или None) — в порядке на картинке
 METRICS = [
     ("Значимые удары", "SigStrikesLanded", "SigStrikesAttempted"),
@@ -45,7 +48,7 @@ class FightView:
 
     @property
     def finished(self) -> bool:
-        return self.status == "Final"
+        return self.status in FINISHED
 
     @property
     def winner(self) -> Corner | None:
@@ -137,7 +140,7 @@ def parse_fight(lf: dict, live_round: int | None = None) -> FightView:
         rounds.append((num, [(label, _value(r, key, None)[0], _value(b, key, None)[0]) for label, key in ROUND_METRICS]))
 
     # Главный блок: идёт бой и есть раунды — последний (текущий) раунд; иначе — весь бой
-    finished = lf.get("Status") == "Final"
+    finished = lf.get("Status") in FINISHED
     if not finished and rounds:
         num = rounds[-1][0]
         focus_title = f"РАУНД {num}"

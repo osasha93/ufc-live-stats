@@ -166,6 +166,24 @@ def test_card_html_live_and_final():
 
 
 @test
+def test_status_over_is_finished():
+    """UFC 333 (24.10): во время турнира законченный бой — "Over", а не "Final" — это тоже итог."""
+    over = {**DECISION, "Status": "Over"}
+    v = fight.parse_fight(over)
+    assert v.finished and v.focus_title == "СТАТИСТИКА БОЯ" and fight.caption(v, "X").startswith("✅ Победа")
+    s, fights = FakeSender(), {}
+    ev_live = replay.fake_event(EVENT, 13046, replay.snapshots(DECISION)[0][0], 1)
+    main.Tracker(s, 1332, fights, get_event=lambda _i: ev_live,
+                 get_fight=lambda _i: replay.snapshots(DECISION)[0][0], get_photos=lambda *_: (None, None)).tick()
+    ev_over = {**ev_live, "Status": "Live", "LiveFightId": 99,
+               "FightCard": [{**f, "Status": "Over"} for f in ev_live["FightCard"] if f["FightId"] == 13046]}
+    done, _, live = main.Tracker(s, 1332, fights, get_event=lambda _i: ev_over, get_fight=lambda _i: over,
+                                 get_photos=lambda *_: (None, None)).tick()
+    assert fights["13046"]["final"] and s.log[-1][0] == "edit" and s.log[-1][2].startswith("✅ Победа")
+    assert not live                                          # законченный бой не держит интервал 5 с
+
+
+@test
 def test_no_bars_when_both_landed_zero():
     """Тейкдауны 0/0 против 0/1 — попаданий нет ни у кого, полосок быть не должно (было: обе полные)."""
     import card

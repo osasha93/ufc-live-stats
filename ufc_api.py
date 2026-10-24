@@ -140,7 +140,7 @@ def discover_from_ufc_com(now: datetime, max_pages: int = 3, fetch_page=None, fe
         except requests.RequestException:
             continue
         ev = event_id and fetch_event(event_id)
-        if ev and is_ufc(ev) and ev.get("Status") != "Final" \
+        if ev and is_ufc(ev) and ev.get("Status") not in ("Final", "Over") \
                 and parse_time(ev["StartTime"]) <= now + timedelta(days=8):
             return event_id
     return None

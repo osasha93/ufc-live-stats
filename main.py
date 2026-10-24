@@ -88,9 +88,9 @@ class Tracker:
             changed |= self._update(fid, live_round if fid == live_id else None)
         cards = ev.get("FightCard", [])
         live = any(not self.fights.get(str(f["FightId"]), {}).get("final")
-                   and (f["FightId"] == live_id or f.get("Status") not in SKIP_STATUSES + ("Final",))
+                   and (f["FightId"] == live_id or f.get("Status") not in SKIP_STATUSES + fight.FINISHED)
                    for f in cards)
-        done = ev.get("Status") == "Final" and all(
+        done = ev.get("Status") in fight.FINISHED and all(
             self.fights.get(str(f["FightId"]), {}).get("final") or f.get("Status") == "Canceled" for f in cards)
         return done, changed, live
 
