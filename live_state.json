@@ -1,0 +1,14 @@
+{
+  "event_ids": {
+    "2026-10-24T14:00:00Z": 1336
+  },
+  "last_event_id": 1336,
+  "fights": {
+    "1336": {
+      "13226": {
+        "msg": 18081,
+        "digest": "dc30eb9f3cd8a5d05fb01f1ce0b63b8b83d1fa81"
+      }
+    }
+  }
+}
