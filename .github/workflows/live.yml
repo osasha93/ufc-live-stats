@@ -14,8 +14,10 @@ on:
         default: ""
   schedule:
     # BEGIN AUTO (tapology-bot)
-    - cron: '0 14 24 10 *'   # UFC 333: Volkanovski vs. Evloev — старт
-    - cron: '20 14 24 10 *'   # UFC 333: Volkanovski vs. Evloev — запасной
+    - cron: '3 21 31 10 *'   # UFC Fight Night: Moicano vs. Nolan — старт
+    - cron: '13 21 31 10 *'   # UFC Fight Night: Moicano vs. Nolan — повтор +13 мин
+    - cron: '33 21 31 10 *'   # UFC Fight Night: Moicano vs. Nolan — повтор +33 мин
+    - cron: '3 22 31 10 *'   # UFC Fight Night: Moicano vs. Nolan — повтор +63 мин
     # END AUTO
 
 concurrency:
