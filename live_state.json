@@ -158,7 +158,8 @@
       },
       "13242": {
         "msg": 18684,
-        "digest": "c27ca9e4bce8b9cb8ab9c54eba93f1180ed00959"
+        "digest": "2447adbb8d15798cd78ee20bc35cd88bb1298b82",
+        "final": true
       }
     }
   },
