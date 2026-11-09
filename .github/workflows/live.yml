@@ -14,10 +14,10 @@ on:
         default: ""
   schedule:
     # BEGIN AUTO (tapology-bot)
-    - cron: '3 22 7 11 *'   # UFC Fight Night: Cortes Acosta vs. Walker — старт
-    - cron: '13 22 7 11 *'   # UFC Fight Night: Cortes Acosta vs. Walker — повтор +13 мин
-    - cron: '33 22 7 11 *'   # UFC Fight Night: Cortes Acosta vs. Walker — повтор +33 мин
-    - cron: '3 23 7 11 *'   # UFC Fight Night: Cortes Acosta vs. Walker — повтор +63 мин
+    - cron: '3 22 14 11 *'   # UFC 334: Gane vs. Hokit — старт
+    - cron: '13 22 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +13 мин
+    - cron: '33 22 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +33 мин
+    - cron: '3 23 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +63 мин
     # END AUTO
 
 concurrency:
