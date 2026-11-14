@@ -216,7 +216,8 @@
     "1345": {
       "13236": {
         "msg": 19021,
-        "digest": "f56f696c86448a754eef553e54fa2c587f42cd31"
+        "digest": "791e2a58f6f72c60413053ca0752aeed22e35c68",
+        "final": true
       }
     }
   },
