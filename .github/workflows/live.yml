@@ -14,10 +14,10 @@ on:
         default: ""
   schedule:
     # BEGIN AUTO (tapology-bot)
-    - cron: '3 22 14 11 *'   # UFC 334: Gane vs. Hokit — старт
-    - cron: '13 22 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +13 мин
-    - cron: '33 22 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +33 мин
-    - cron: '3 23 14 11 *'   # UFC 334: Gane vs. Hokit — повтор +63 мин
+    - cron: '3 15 21 11 *'   # UFC Fight Night: Procházka vs. Stirling — старт
+    - cron: '13 15 21 11 *'   # UFC Fight Night: Procházka vs. Stirling — повтор +13 мин
+    - cron: '33 15 21 11 *'   # UFC Fight Night: Procházka vs. Stirling — повтор +33 мин
+    - cron: '3 16 21 11 *'   # UFC Fight Night: Procházka vs. Stirling — повтор +63 мин
     # END AUTO
 
 concurrency:
